@@ -1,12 +1,19 @@
 from datetime import datetime, timezone
 import httpx
 
+CACHE = {
+    "prices": None,
+    "timestamp": None
+}
+
 def now_iso():
     return datetime.now(timezone.utc).isoformat()
 
 async def get_prices():
-    url = "https://api.coingecko.com/api/v3/simple/price"
+    if CACHE["prices"] is not None:
+        return CACHE["prices"]
 
+    url = "https://api.coingecko.com/api/v3/simple/price"
     params = {
         "ids": "ripple,ondo-finance,aerodrome-finance,centrifuge",
         "vs_currencies": "usd",
@@ -15,10 +22,22 @@ async def get_prices():
         "include_24hr_change": "true"
     }
 
-    async with httpx.AsyncClient(timeout=20) as client:
-        response = await client.get(url, params=params)
-        response.raise_for_status()
-        return response.json()
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.get(url, params=params)
+            response.raise_for_status()
+            data = response.json()
+            CACHE["prices"] = data
+            CACHE["timestamp"] = now_iso()
+            return data
+    except Exception as e:
+        return {
+            "error": str(e),
+            "ripple": {},
+            "ondo-finance": {},
+            "aerodrome-finance": {},
+            "centrifuge": {}
+        }
 
 async def build_exit_snapshot():
     prices = await get_prices()
@@ -41,6 +60,7 @@ async def build_exit_snapshot():
                 "distance_pct": None
             }
         },
+        "api_error": prices.get("error"),
         "missing_data": [
             "btc_dominance",
             "cbbi",
