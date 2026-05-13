@@ -6,6 +6,7 @@ def now_iso():
 
 async def get_prices():
     url = "https://api.coingecko.com/api/v3/simple/price"
+
     params = {
         "ids": "ripple,ondo-finance,aerodrome-finance,centrifuge",
         "vs_currencies": "usd",
@@ -15,9 +16,9 @@ async def get_prices():
     }
 
     async with httpx.AsyncClient(timeout=20) as client:
-        r = await client.get(url, params=params)
-        r.raise_for_status()
-        return r.json()
+        response = await client.get(url, params=params)
+        response.raise_for_status()
+        return response.json()
 
 async def build_exit_snapshot():
     prices = await get_prices()
