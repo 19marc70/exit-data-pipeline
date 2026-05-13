@@ -8,7 +8,7 @@ app = FastAPI()
 
 
 @app.get("/health")
-def health():
+async def health():
     return {
         "status": "ok",
         "timestamp": datetime.now(timezone.utc).isoformat()
@@ -16,13 +16,13 @@ def health():
 
 
 @app.get("/market/exit-snapshot")
-def get_exit_snapshot():
-    snapshot = build_exit_snapshot()
+async def get_exit_snapshot():
+    snapshot = await build_exit_snapshot()
     return snapshot
 
 
 @app.get("/market/exit-engine")
-def get_exit_engine():
-    snapshot = build_exit_snapshot()
+async def get_exit_engine():
+    snapshot = await build_exit_snapshot()
     result = build_exit_engine(snapshot)
     return result
