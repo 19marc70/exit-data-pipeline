@@ -1,33 +1,28 @@
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from .sources import build_exit_snapshot, now_iso
+from datetime import datetime, timezone
 
-app = FastAPI(
-    title="Exit Data Pipeline",
-    version="1.0.0",
-    description="Live crypto data pipeline for EXIT PLAN v10.1 GPT Action."
-)
+from .sources import build_exit_snapshot
+from .engine import build_exit_engine
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["GET"],
-    allow_headers=["*"],
-)
+app = FastAPI()
 
-@app.get("/")
-async def root():
-    return {
-        "name": "Exit Data Pipeline",
-        "version": "1.0.0",
-        "endpoints": ["/health", "/market/exit-snapshot"]
-    }
 
 @app.get("/health")
-async def health():
-    return {"status": "ok", "timestamp": now_iso()}
+def health():
+    return {
+        "status": "ok",
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+
 
 @app.get("/market/exit-snapshot")
-async def market_exit_snapshot():
-    return await build_exit_snapshot()
+def get_exit_snapshot():
+    snapshot = build_exit_snapshot()
+    return snapshot
+
+
+@app.get("/market/exit-engine")
+def get_exit_engine():
+    snapshot = build_exit_snapshot()
+    result = build_exit_engine(snapshot)
+    return result
