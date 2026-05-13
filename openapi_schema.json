@@ -1,0 +1,92 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Exit Data Pipeline",
+    "version": "1.0.0",
+    "description": "Live crypto market snapshot voor EXIT PLAN v10.1."
+  },
+  "servers": [
+    {
+      "url": "https://YOUR_RAILWAY_DOMAIN"
+    }
+  ],
+  "paths": {
+    "/market/exit-snapshot": {
+      "get": {
+        "operationId": "getExitSnapshot",
+        "summary": "Haalt live exit-framework marktdata op",
+        "description": "Retourneert BTC.D, CBBI, Pi Cycle, Fear & Greed, ATR, RSI, volume, funding en open-interest waar beschikbaar.",
+        "responses": {
+          "200": {
+            "description": "Live market snapshot",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "schema_version": { "type": "string" },
+                    "timestamp": { "type": "string" },
+                    "sources": { "type": "object" },
+                    "btc": { "type": "object" },
+                    "btc_dominance": {
+                      "type": "object",
+                      "properties": {
+                        "value": { "type": ["number", "null"] },
+                        "source": { "type": "string" },
+                        "timestamp": { "type": "string" }
+                      }
+                    },
+                    "cbbi": {
+                      "type": "object",
+                      "properties": {
+                        "value": { "type": ["number", "null"] },
+                        "source": { "type": "string" },
+                        "timestamp": { "type": "string" },
+                        "error": { "type": ["string", "null"] }
+                      }
+                    },
+                    "fear_greed": { "type": "object" },
+                    "coins": {
+                      "type": "object",
+                      "properties": {
+                        "XRP": { "type": "object" },
+                        "ONDO": { "type": "object" },
+                        "AERO": { "type": "object" },
+                        "CFG": { "type": "object" }
+                      }
+                    },
+                    "data_quality": { "type": "object" }
+                  },
+                  "required": ["timestamp", "coins", "btc_dominance"]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "operationId": "getHealth",
+        "summary": "Health check",
+        "responses": {
+          "200": {
+            "description": "Health status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": { "type": "string" },
+                    "timestamp": { "type": "string" }
+                  },
+                  "required": ["status"]
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
