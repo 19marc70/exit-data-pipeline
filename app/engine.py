@@ -17,6 +17,8 @@ def calculate_exit_signal(symbol, coin_data):
     change = coin_data.get("usd_24h_change")
     volume = coin_data.get("usd_24h_vol")
     price = coin_data.get("usd")
+    rsi = coin_data.get("rsi_14d")
+    atr = coin_data.get("atr_14d")
 
     liquidity = classify_liquidity(volume)
 
@@ -30,6 +32,17 @@ def calculate_exit_signal(symbol, coin_data):
         elif change < -10:
             score -= 15
             reasons.append("weak_momentum")
+
+    if rsi is not None:
+        if rsi >= 80:
+            score += 25
+            reasons.append("rsi_extreme")
+        elif rsi >= 70:
+            score += 15
+            reasons.append("rsi_overbought")
+        elif rsi <= 35:
+            score -= 10
+            reasons.append("rsi_weak")
 
     if volume is not None:
         if volume > 100_000_000:
@@ -48,13 +61,15 @@ def calculate_exit_signal(symbol, coin_data):
             "price": price,
             "change_24h": change,
             "volume_24h": volume,
+            "rsi_14d": rsi,
+            "atr_14d": atr,
             "reasons": ["xrp_is_not_sell_target"]
         }
 
-    if score >= 30:
+    if score >= 45:
         signal = "PREPARE_PARTIAL_EXIT"
         sell_pct = 10
-    elif score >= 15:
+    elif score >= 25:
         signal = "WATCH_EXIT_ZONE"
         sell_pct = 0
     else:
@@ -69,6 +84,8 @@ def calculate_exit_signal(symbol, coin_data):
         "price": price,
         "change_24h": change,
         "volume_24h": volume,
+        "rsi_14d": rsi,
+        "atr_14d": atr,
         "reasons": reasons
     }
 
@@ -86,15 +103,15 @@ def build_exit_engine(snapshot):
         if isinstance(item.get("score"), (int, float))
     )
 
-    if exit_zone_score >= 70:
+    if exit_zone_score >= 90:
         global_action = "EXIT_ZONE_ACTIVE"
-    elif exit_zone_score >= 40:
+    elif exit_zone_score >= 50:
         global_action = "EXIT_ZONE_WATCH"
     else:
         global_action = "NO_FULL_EXIT"
 
     return {
-        "engine_version": "0.2",
+        "engine_version": "0.3",
         "engine_status": "active",
         "global_action": global_action,
         "exit_zone_score": exit_zone_score,
@@ -105,8 +122,6 @@ def build_exit_engine(snapshot):
         },
         "signals": signals,
         "missing_engine_data": [
-            "rsi",
-            "atr",
             "funding",
             "open_interest",
             "btc_dominance",
