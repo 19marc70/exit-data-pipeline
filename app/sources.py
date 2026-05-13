@@ -4,7 +4,8 @@ import httpx
 from .indicators import calculate_rsi, calculate_atr
 
 CACHE = {
-    "snapshot": None
+    "snapshot": None,
+    "timestamp": None
 }
 
 COINS = {
@@ -13,6 +14,7 @@ COINS = {
     "AERO": "aerodrome-finance",
     "CFG": "centrifuge"
 }
+
 
 def now_iso():
     return datetime.now(timezone.utc).isoformat()
@@ -34,35 +36,11 @@ async def get_prices():
         return response.json()
 
 
-async def get_market_chart(coin_id):
-    url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
-    params = {
-        "vs_currency": "usd",
-        "days": "30",
-        "interval": "daily"
-    }
-
-    async with httpx.AsyncClient(timeout=20) as client:
-        response = await client.get(url, params=params)
-        response.raise_for_status()
-        data = response.json()
-
-    prices = data.get("prices", [])
-    closes = [p[1] for p in prices]
-
-    # CoinGecko market_chart geeft geen echte high/low candles.
-    # Voor v0.3 gebruiken we close-proxy ATR.
-    highs = closes
-    lows = closes
-
-    return {
-        "rsi_14d": calculate_rsi(closes),
-        "atr_14d": calculate_atr(highs, lows, closes),
-        "atr_method": "close_proxy"
-    }
-
-
 async def build_exit_snapshot():
+    # Gebruik cache om CoinGecko 429 rate limits te beperken
+    if CACHE["snapshot"] is not None:
+        return CACHE["snapshot"]
+
     try:
         prices = await get_prices()
 
@@ -70,15 +48,12 @@ async def build_exit_snapshot():
 
         for symbol, coin_id in COINS.items():
             base = prices.get(coin_id, {})
-            try:
-                indicators = await get_market_chart(coin_id)
-            except Exception as e:
-                indicators = {
-                    "rsi_14d": None,
-                    "atr_14d": None,
-                    "atr_method": "unavailable",
-                    "indicator_error": str(e)
-                }
+
+            indicators = {
+                "rsi_14d": None,
+                "atr_14d": None,
+                "atr_method": "disabled_rate_limit"
+            }
 
             coins[symbol] = {
                 **base,
@@ -103,18 +78,22 @@ async def build_exit_snapshot():
                 "cbbi",
                 "pi_cycle",
                 "funding",
-                "open_interest"
+                "open_interest",
+                "rsi",
+                "atr"
             ]
         }
 
         CACHE["snapshot"] = snapshot
+        CACHE["timestamp"] = now_iso()
+
         return snapshot
 
     except Exception as e:
         if CACHE["snapshot"]:
             cached = CACHE["snapshot"]
-            cached["api_error"] = str(e)
             cached["cache_used"] = True
+            cached["api_error"] = str(e)
             return cached
 
         return {
