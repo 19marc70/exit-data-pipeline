@@ -22,7 +22,7 @@ COINS = {
     "CFG": "centrifuge"
 }
 
-CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "3600"))
+CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "7200"))
 ENABLE_INDICATORS = os.getenv("ENABLE_INDICATORS", "true").lower() == "true"
 
 
@@ -34,23 +34,9 @@ def cache_valid():
     return CACHE["snapshot"] is not None and time.time() - CACHE["timestamp"] < CACHE_TTL_SECONDS
 
 
-def classify_trend_from_change(change_24h):
-    if change_24h is None:
-        return "⚪ unknown"
-    if change_24h >= 8:
-        return "🟢 strong_uptrend"
-    if change_24h >= 2:
-        return "🟢 uptrend"
-    if change_24h <= -8:
-        return "🔴 breakdown"
-    if change_24h <= -2:
-        return "🟠 weakening"
-    return "🟡 sideways"
-
-
 async def get_json(url, params=None):
     try:
-        async with httpx.AsyncClient(timeout=25) as client:
+        async with httpx.AsyncClient(timeout=30) as client:
             r = await client.get(url, params=params)
             if r.status_code == 429:
                 return None
@@ -79,7 +65,7 @@ async def get_market_chart(coin_id, current_price):
             "rsi_14d": None,
             "atr_14d": None,
             "volatility": "⚪ disabled",
-            "trend": None,
+            "trend": "⚪ disabled",
             "indicator_method": "disabled"
         }
 
@@ -87,7 +73,7 @@ async def get_market_chart(coin_id, current_price):
         f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart",
         {
             "vs_currency": "usd",
-            "days": "30",
+            "days": "45",
             "interval": "daily"
         }
     )
@@ -102,18 +88,34 @@ async def get_market_chart(coin_id, current_price):
         }
 
     prices = data.get("prices", [])
-    closes = [item[1] for item in prices if len(item) >= 2]
+    closes = [p[1] for p in prices if len(p) >= 2]
 
     rsi = calculate_rsi(closes)
     atr = calculate_atr_proxy(closes)
+    trend = classify_trend_from_closes(closes)
+    volatility = classify_volatility(current_price, atr)
 
     return {
         "rsi_14d": rsi,
         "atr_14d": atr,
-        "volatility": classify_volatility(current_price, atr),
-        "trend": classify_trend_from_closes(closes),
-        "indicator_method": "coingecko_market_chart_close_proxy"
+        "volatility": volatility,
+        "trend": trend,
+        "indicator_method": "coingecko_45d_close_proxy"
     }
+
+
+def classify_trend_from_change(change_24h):
+    if change_24h is None:
+        return "⚪ unknown"
+    if change_24h >= 8:
+        return "🟢 strong_uptrend"
+    if change_24h >= 2:
+        return "🟢 uptrend"
+    if change_24h <= -8:
+        return "🔴 breakdown"
+    if change_24h <= -2:
+        return "🟠 weakening"
+    return "🟡 sideways"
 
 
 async def get_btc_dominance():
@@ -127,9 +129,16 @@ async def get_fear_greed():
     data = await get_json("https://api.alternative.me/fng/")
     if not data:
         return None
+
     item = data.get("data", [{}])[0]
+
+    try:
+        value = int(item.get("value"))
+    except Exception:
+        value = None
+
     return {
-        "value": int(item.get("value")),
+        "value": value,
         "classification": item.get("value_classification")
     }
 
@@ -191,9 +200,6 @@ async def build_exit_snapshot():
         "funding",
         "open_interest"
     ]
-
-    if not ENABLE_INDICATORS:
-        missing_data.extend(["rsi", "atr"])
 
     snapshot = {
         "timestamp": now_iso(),
