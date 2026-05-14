@@ -17,11 +17,28 @@ COINS = {
 
 CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "3600"))
 
+
 def now_iso():
     return datetime.now(timezone.utc).isoformat()
 
+
 def cache_valid():
     return CACHE["snapshot"] is not None and time.time() - CACHE["timestamp"] < CACHE_TTL_SECONDS
+
+
+def classify_trend_from_change(change_24h):
+    if change_24h is None:
+        return "⚪ unknown"
+    if change_24h >= 8:
+        return "🟢 strong_uptrend"
+    if change_24h >= 2:
+        return "🟢 uptrend"
+    if change_24h <= -8:
+        return "🔴 breakdown"
+    if change_24h <= -2:
+        return "🟠 weakening"
+    return "🟡 sideways"
+
 
 async def get_json(url, params=None):
     try:
@@ -33,6 +50,7 @@ async def get_json(url, params=None):
             return r.json()
     except Exception:
         return None
+
 
 async def get_prices():
     return await get_json(
@@ -46,11 +64,13 @@ async def get_prices():
         }
     )
 
+
 async def get_btc_dominance():
     data = await get_json("https://api.coingecko.com/api/v3/global")
     if not data:
         return None
     return data.get("data", {}).get("market_cap_percentage", {}).get("btc")
+
 
 async def get_fear_greed():
     data = await get_json("https://api.alternative.me/fng/")
@@ -61,6 +81,7 @@ async def get_fear_greed():
         "value": int(item.get("value")),
         "classification": item.get("value_classification")
     }
+
 
 async def build_exit_snapshot():
     if cache_valid():
@@ -99,11 +120,14 @@ async def build_exit_snapshot():
 
     for symbol, coin_id in COINS.items():
         base = prices.get(coin_id, {})
+        change = base.get("usd_24h_change")
+
         coins[symbol] = {
             **base,
             "rsi_14d": None,
             "atr_14d": None,
-            "trend": "⚪ unavailable",
+            "trend": classify_trend_from_change(change),
+            "trend_method": "24h_change_proxy",
             "atr_method": "disabled_free_rate_limit_mode"
         }
 
