@@ -14,24 +14,34 @@ def calculate_rsi(closes, period=14):
     avg_loss = sum(losses[-period:]) / period
 
     if avg_loss == 0:
-        return 100
+        return 100.0
 
     rs = avg_gain / avg_loss
     return round(100 - (100 / (1 + rs)), 2)
 
 
-def calculate_atr(highs, lows, closes, period=14):
-    if not highs or not lows or not closes or len(closes) <= period:
+def calculate_atr_proxy(closes, period=14):
+    if not closes or len(closes) <= period:
         return None
 
-    true_ranges = []
+    ranges = []
 
     for i in range(1, len(closes)):
-        tr = max(
-            highs[i] - lows[i],
-            abs(highs[i] - closes[i - 1]),
-            abs(lows[i] - closes[i - 1])
-        )
-        true_ranges.append(tr)
+        ranges.append(abs(closes[i] - closes[i - 1]))
 
-    return round(sum(true_ranges[-period:]) / period, 6)
+    return round(sum(ranges[-period:]) / period, 6)
+
+
+def classify_trend(closes):
+    if not closes or len(closes) < 20:
+        return "⚪ unknown"
+
+    last = closes[-1]
+    ma7 = sum(closes[-7:]) / 7
+    ma20 = sum(closes[-20:]) / 20
+
+    if last > ma7 > ma20:
+        return "🟢 uptrend"
+    if last < ma7 < ma20:
+        return "🔴 downtrend"
+    return "🟡 mixed"
