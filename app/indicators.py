@@ -32,7 +32,23 @@ def calculate_atr_proxy(closes, period=14):
     return round(sum(ranges[-period:]) / period, 6)
 
 
-def classify_trend(closes):
+def classify_volatility(price, atr):
+    if price is None or atr is None or price == 0:
+        return "⚪ unknown"
+
+    atr_pct = (atr / price) * 100
+
+    if atr_pct >= 10:
+        return "🔴 high_volatility"
+    if atr_pct >= 5:
+        return "🟠 elevated_volatility"
+    if atr_pct >= 2:
+        return "🟡 normal_volatility"
+
+    return "🟢 low_volatility"
+
+
+def classify_trend_from_closes(closes):
     if not closes or len(closes) < 20:
         return "⚪ unknown"
 
@@ -44,4 +60,5 @@ def classify_trend(closes):
         return "🟢 uptrend"
     if last < ma7 < ma20:
         return "🔴 downtrend"
+
     return "🟡 mixed"
