@@ -30,54 +30,109 @@ def execution_limit(liquidity):
     return 0.03
 
 
-def score_coin(symbol, data):
+def trigger_matrix(symbol, data, macro_score):
+    confirmations = []
+    blockers = []
     score = 0
-    reasons = []
 
     change = data.get("usd_24h_change")
     volume = data.get("usd_24h_vol")
     rsi = data.get("rsi_14d")
+    atr = data.get("atr_14d")
     trend = data.get("trend")
+    volatility = data.get("volatility")
 
     liquidity = classify_liquidity(volume)
+
+    if symbol == "XRP":
+        return {
+            "signal": "HOLD_NO_SELL_TARGET",
+            "score": 0,
+            "sell_pct": 0,
+            "confirmations": ["xrp_is_not_sell_target"],
+            "blockers": ["xrp_sell_disabled"],
+            "liquidity": liquidity
+        }
 
     if change is not None:
         if change >= 15:
             score += 20
-            reasons.append("strong_24h_expansion")
+            confirmations.append("momentum_expansion")
         elif change >= 8:
             score += 10
-            reasons.append("moderate_24h_expansion")
+            confirmations.append("positive_momentum")
         elif change <= -10:
             score -= 15
-            reasons.append("weak_momentum")
+            blockers.append("weak_momentum")
 
     if rsi is not None:
         if rsi >= 80:
             score += 25
-            reasons.append("rsi_extreme")
+            confirmations.append("rsi_extreme")
         elif rsi >= 70:
             score += 15
-            reasons.append("rsi_overbought")
+            confirmations.append("rsi_overbought")
         elif rsi <= 35:
             score -= 10
-            reasons.append("rsi_weak")
+            blockers.append("rsi_weak")
+    else:
+        blockers.append("rsi_missing")
 
-    if trend == "🟢 uptrend":
-        score += 5
-        reasons.append("uptrend")
-    elif trend == "🔴 downtrend":
+    if trend in ["🟢 strong_uptrend", "🟢 uptrend"]:
+        score += 10
+        confirmations.append("trend_positive")
+    elif trend in ["🟠 weakening", "🔴 breakdown", "🔴 downtrend"]:
         score -= 10
-        reasons.append("downtrend")
+        blockers.append("trend_weakening")
+
+    if volatility in ["🔴 high_volatility", "🟠 elevated_volatility"]:
+        score += 5
+        confirmations.append("volatility_expansion")
+    elif volatility is None or "unavailable" in str(volatility):
+        blockers.append("volatility_missing")
 
     if liquidity == "🟢 strong":
         score += 5
-        reasons.append("strong_volume")
+        confirmations.append("execution_liquidity_strong")
     elif liquidity == "🔴 severe":
-        score -= 10
-        reasons.append("low_liquidity")
+        score -= 15
+        blockers.append("execution_liquidity_severe")
+    elif liquidity == "🟠 thin":
+        score -= 5
+        blockers.append("execution_liquidity_thin")
 
-    return score, reasons, liquidity
+    score += macro_score
+
+    confirmation_count = len(confirmations)
+
+    if confirmation_count < 2:
+        signal = "HOLD"
+        sell_pct = 0
+        blockers.append("insufficient_multi_factor_confirmation")
+    elif score >= 60:
+        signal = "SELL_50"
+        sell_pct = 50
+    elif score >= 40:
+        signal = "SELL_25"
+        sell_pct = 25
+    elif score >= 25:
+        signal = "SELL_10"
+        sell_pct = 10
+    elif score <= -25:
+        signal = "DEFENSIVE_HOLD"
+        sell_pct = 0
+    else:
+        signal = "HOLD"
+        sell_pct = 0
+
+    return {
+        "signal": signal,
+        "score": score,
+        "sell_pct": sell_pct,
+        "confirmations": confirmations,
+        "blockers": blockers,
+        "liquidity": liquidity
+    }
 
 
 def build_exit_engine(snapshot):
@@ -108,84 +163,66 @@ def build_exit_engine(snapshot):
             macro_reasons.append("fear_no_euphoria")
 
     signals = {}
-    coin_total = 0
+    total_score = macro_score
 
     for symbol, data in coins.items():
-        score, reasons, liquidity = score_coin(symbol, data)
-        coin_total += score
-
+        trigger = trigger_matrix(symbol, data, macro_score)
         sellable = PORTFOLIO.get(symbol, {}).get("sellable", 0)
 
+        liquidity = trigger["liquidity"]
+        daily_limit = execution_limit(liquidity)
+
+        raw_sell_qty = sellable * (trigger["sell_pct"] / 100)
+        max_daily_qty = sellable * daily_limit
+        sell_qty = min(raw_sell_qty, max_daily_qty)
+
         if symbol == "XRP":
-            signal = "HOLD_NO_SELL_TARGET"
-            sell_pct = 0
             sell_qty = 0
             max_daily_qty = 0
-            reasons = ["xrp_is_not_sell_target"]
 
-        else:
-            if score >= 45:
-                signal = "SCALE_OUT_25"
-                sell_pct = 25
-            elif score >= 25:
-                signal = "REDUCE_RISK_10"
-                sell_pct = 10
-            elif score <= -20:
-                signal = "DEFENSIVE_HOLD"
-                sell_pct = 0
-            else:
-                signal = "HOLD"
-                sell_pct = 0
-
-            raw_sell_qty = sellable * (sell_pct / 100)
-            daily_limit = execution_limit(liquidity)
-            max_daily_qty = sellable * daily_limit
-            sell_qty = min(raw_sell_qty, max_daily_qty)
+        total_score += trigger["score"]
 
         signals[symbol] = {
-            "signal": signal,
-            "score": score,
-            "sell_pct": sell_pct,
-            "sell_qty": round(sell_qty, 4),
-            "max_daily_qty": round(max_daily_qty, 4),
-            "liquidity": liquidity,
+            **trigger,
             "price": data.get("usd"),
             "change_24h": data.get("usd_24h_change"),
             "volume_24h": data.get("usd_24h_vol"),
             "rsi_14d": data.get("rsi_14d"),
             "atr_14d": data.get("atr_14d"),
             "trend": data.get("trend"),
-            "reasons": reasons
+            "volatility": data.get("volatility"),
+            "sell_qty": round(sell_qty, 4),
+            "max_daily_qty": round(max_daily_qty, 4),
+            "execution_type": "limit_or_ladder_only"
         }
 
-    exit_zone_score = coin_total + macro_score
-
-    if exit_zone_score >= 70:
+    if total_score >= 90:
         global_action = "RISK_OFF"
-    elif exit_zone_score >= 40:
+    elif total_score >= 50:
         global_action = "PARTIAL_EXIT_ALLOWED"
     else:
         global_action = "NO_FULL_EXIT"
 
     return {
-        "engine_version": "0.5-phase-4",
+        "engine_version": "0.6-phase-7-trigger-matrix",
         "engine_status": "active",
         "global_action": global_action,
-        "exit_zone_score": exit_zone_score,
+        "exit_zone_score": total_score,
         "score_components": {
-            "coin_score": coin_total,
             "macro_score": macro_score,
             "macro_reasons": macro_reasons
         },
         "guardrails": {
             "xrp_sell_allowed": False,
             "moonbags_sell_allowed": False,
-            "full_exit_allowed_without_multi_category_confirmation": False
+            "single_indicator_exit_allowed": False,
+            "full_exit_allowed_without_multi_category_confirmation": False,
+            "slippage_above_5pct_allowed": False
         },
         "execution_engine": {
-            "slippage_guardrail": "no_trade_if_expected_slippage_above_5pct",
             "execution_type": "limit_or_ladder_only",
-            "moonbags_protected": True
+            "moonbags_protected": True,
+            "liquidity_respect_required": True
         },
         "signals": signals,
         "missing_engine_data": snapshot.get("missing_data", [])
