@@ -3,6 +3,13 @@ import os
 import time
 import httpx
 
+from .indicators import (
+    calculate_rsi,
+    calculate_atr_proxy,
+    classify_volatility,
+    classify_trend_from_closes
+)
+
 CACHE = {
     "snapshot": None,
     "timestamp": 0
@@ -16,6 +23,7 @@ COINS = {
 }
 
 CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "3600"))
+ENABLE_INDICATORS = os.getenv("ENABLE_INDICATORS", "true").lower() == "true"
 
 
 def now_iso():
@@ -63,6 +71,49 @@ async def get_prices():
             "include_24hr_change": "true"
         }
     )
+
+
+async def get_market_chart(coin_id, current_price):
+    if not ENABLE_INDICATORS:
+        return {
+            "rsi_14d": None,
+            "atr_14d": None,
+            "volatility": "⚪ disabled",
+            "trend": None,
+            "indicator_method": "disabled"
+        }
+
+    data = await get_json(
+        f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart",
+        {
+            "vs_currency": "usd",
+            "days": "30",
+            "interval": "daily"
+        }
+    )
+
+    if not data:
+        return {
+            "rsi_14d": None,
+            "atr_14d": None,
+            "volatility": "⚪ unavailable",
+            "trend": None,
+            "indicator_method": "unavailable_rate_limit"
+        }
+
+    prices = data.get("prices", [])
+    closes = [item[1] for item in prices if len(item) >= 2]
+
+    rsi = calculate_rsi(closes)
+    atr = calculate_atr_proxy(closes)
+
+    return {
+        "rsi_14d": rsi,
+        "atr_14d": atr,
+        "volatility": classify_volatility(current_price, atr),
+        "trend": classify_trend_from_closes(closes),
+        "indicator_method": "coingecko_market_chart_close_proxy"
+    }
 
 
 async def get_btc_dominance():
@@ -120,16 +171,29 @@ async def build_exit_snapshot():
 
     for symbol, coin_id in COINS.items():
         base = prices.get(coin_id, {})
+        price = base.get("usd")
         change = base.get("usd_24h_change")
+
+        indicators = await get_market_chart(coin_id, price)
+
+        trend = indicators.get("trend") or classify_trend_from_change(change)
 
         coins[symbol] = {
             **base,
-            "rsi_14d": None,
-            "atr_14d": None,
-            "trend": classify_trend_from_change(change),
-            "trend_method": "24h_change_proxy",
-            "atr_method": "disabled_free_rate_limit_mode"
+            **indicators,
+            "trend": trend,
+            "trend_fallback": "24h_change_proxy" if indicators.get("trend") is None else "market_chart_ma"
         }
+
+    missing_data = [
+        "cbbi",
+        "pi_cycle",
+        "funding",
+        "open_interest"
+    ]
+
+    if not ENABLE_INDICATORS:
+        missing_data.extend(["rsi", "atr"])
 
     snapshot = {
         "timestamp": now_iso(),
@@ -138,6 +202,7 @@ async def build_exit_snapshot():
         "cache_mode": "live",
         "cache_ttl_seconds": CACHE_TTL_SECONDS,
         "free_rate_limit_mode": True,
+        "indicators_enabled": ENABLE_INDICATORS,
         "coins": coins,
         "raw_prices": prices,
         "btc": {
@@ -149,14 +214,7 @@ async def build_exit_snapshot():
                 "distance_pct": None
             }
         },
-        "missing_data": [
-            "cbbi",
-            "pi_cycle",
-            "funding",
-            "open_interest",
-            "rsi",
-            "atr"
-        ]
+        "missing_data": missing_data
     }
 
     CACHE["snapshot"] = snapshot
