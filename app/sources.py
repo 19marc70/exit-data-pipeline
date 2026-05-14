@@ -3,6 +3,8 @@ import os
 import time
 import httpx
 
+from .indicators import calculate_rsi, calculate_atr_proxy, classify_trend
+
 CACHE = {
     "snapshot": None,
     "timestamp": 0
@@ -29,6 +31,15 @@ def cache_valid():
     )
 
 
+async def get_json(url, params=None):
+    async with httpx.AsyncClient(timeout=25) as client:
+        response = await client.get(url, params=params)
+        if response.status_code == 429:
+            return None
+        response.raise_for_status()
+        return response.json()
+
+
 async def get_prices():
     url = "https://api.coingecko.com/api/v3/simple/price"
     params = {
@@ -38,43 +49,61 @@ async def get_prices():
         "include_24hr_vol": "true",
         "include_24hr_change": "true"
     }
+    return await get_json(url, params)
 
-    async with httpx.AsyncClient(timeout=20) as client:
-        response = await client.get(url, params=params)
-        if response.status_code == 429:
-            return CACHE["snapshot"].get("raw_prices", {}) if CACHE["snapshot"] else {}
-        response.raise_for_status()
-        return response.json()
+
+async def get_market_chart(coin_id):
+    url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
+    params = {
+        "vs_currency": "usd",
+        "days": "30",
+        "interval": "daily"
+    }
+
+    data = await get_json(url, params)
+
+    if not data:
+        return {
+            "rsi_14d": None,
+            "atr_14d": None,
+            "trend": "⚪ unavailable",
+            "atr_method": "unavailable_rate_limit"
+        }
+
+    prices = data.get("prices", [])
+    closes = [item[1] for item in prices]
+
+    return {
+        "rsi_14d": calculate_rsi(closes),
+        "atr_14d": calculate_atr_proxy(closes),
+        "trend": classify_trend(closes),
+        "atr_method": "close_to_close_proxy"
+    }
 
 
 async def get_btc_dominance():
-    try:
-        url = "https://api.coingecko.com/api/v3/global"
-        async with httpx.AsyncClient(timeout=20) as client:
-            response = await client.get(url)
-            if response.status_code == 429:
-                return None
-            response.raise_for_status()
-            data = response.json()
-            return data.get("data", {}).get("market_cap_percentage", {}).get("btc")
-    except Exception:
+    data = await get_json("https://api.coingecko.com/api/v3/global")
+    if not data:
         return None
+    return data.get("data", {}).get("market_cap_percentage", {}).get("btc")
 
 
 async def get_fear_greed():
-    try:
-        url = "https://api.alternative.me/fng/"
-        async with httpx.AsyncClient(timeout=20) as client:
-            response = await client.get(url)
-            response.raise_for_status()
-            data = response.json()
-            item = data.get("data", [{}])[0]
-            return {
-                "value": int(item.get("value")),
-                "classification": item.get("value_classification")
-            }
-    except Exception:
+    data = await get_json("https://api.alternative.me/fng/")
+    if not data:
         return None
+
+    item = data.get("data", [{}])[0]
+
+    try:
+        value = int(item.get("value"))
+    except Exception:
+        value = None
+
+    return {
+        "value": value,
+        "classification": item.get("value_classification")
+    }
 
 
 async def build_exit_snapshot():
@@ -86,6 +115,12 @@ async def build_exit_snapshot():
     fear_greed = await get_fear_greed()
 
     if not prices:
+        if CACHE["snapshot"]:
+            cached = CACHE["snapshot"]
+            cached["cache_used"] = True
+            cached["api_error"] = "coingecko_rate_limited"
+            return cached
+
         return {
             "timestamp": now_iso(),
             "status": "degraded",
@@ -103,20 +138,18 @@ async def build_exit_snapshot():
 
     for symbol, coin_id in COINS.items():
         base = prices.get(coin_id, {})
+        indicators = await get_market_chart(coin_id)
+
         coins[symbol] = {
             **base,
-            "rsi_14d": None,
-            "atr_14d": None,
-            "atr_method": "disabled_free_rate_limit_mode"
+            **indicators
         }
 
     missing_data = [
         "cbbi",
         "pi_cycle",
         "funding",
-        "open_interest",
-        "rsi",
-        "atr"
+        "open_interest"
     ]
 
     if btc_dominance is None:
