@@ -1,202 +1,95 @@
 def classify_liquidity(volume):
-    if volume is None:
-        return "⚪ unknown"
-    if volume < 5_000_000:
-        return "🔴 severe"
-    if volume < 25_000_000:
-        return "🟠 thin"
-    if volume < 100_000_000:
-        return "🟡 moderate"
+    if volume is None: return "⚪ unknown"
+    if volume < 5_000_000: return "🔴 severe"
+    if volume < 25_000_000: return "🟠 thin"
+    if volume < 100_000_000: return "🟡 moderate"
     return "🟢 strong"
 
+def score_indicators(data):
+    score, reasons = 0, []
+    rsi = data.get("rsi_14d")
+    atr = data.get("atr_14d")
+    trend = data.get("trend")
 
-def btc_dominance_modifier(btc_dominance):
-    if btc_dominance is None:
-        return {
-            "modifier": 0,
-            "status": "⚪ unknown",
-            "reason": "btc_dominance_missing"
-        }
+    if rsi is not None:
+        if rsi >= 80:
+            score += 25; reasons.append("rsi_extreme")
+        elif rsi >= 70:
+            score += 15; reasons.append("rsi_overbought")
+        elif rsi <= 35:
+            score -= 10; reasons.append("rsi_weak")
 
-    if btc_dominance >= 58:
-        return {
-            "modifier": -10,
-            "status": "🔴 alt_headwind",
-            "reason": "btc_dominance_high"
-        }
+    if trend == "🟢 uptrend":
+        score += 5; reasons.append("uptrend")
+    elif trend == "🔴 downtrend":
+        score -= 10; reasons.append("downtrend")
 
-    if btc_dominance <= 52:
-        return {
-            "modifier": 10,
-            "status": "🟢 alt_supportive",
-            "reason": "btc_dominance_low"
-        }
+    if atr is not None:
+        if atr > 0:
+            reasons.append("atr_available")
 
-    return {
-        "modifier": 0,
-        "status": "🟡 neutral",
-        "reason": "btc_dominance_neutral"
-    }
-
-
-def fear_greed_modifier(fear_greed):
-    if not fear_greed:
-        return {
-            "modifier": 0,
-            "status": "⚪ unknown",
-            "reason": "fear_greed_missing"
-        }
-
-    value = fear_greed.get("value")
-
-    if value is None:
-        return {
-            "modifier": 0,
-            "status": "⚪ unknown",
-            "reason": "fear_greed_missing"
-        }
-
-    if value >= 85:
-        return {
-            "modifier": 15,
-            "status": "🔴 extreme_greed",
-            "reason": "market_euphoria"
-        }
-
-    if value >= 70:
-        return {
-            "modifier": 8,
-            "status": "🟠 greed",
-            "reason": "risk_appetite_high"
-        }
-
-    if value <= 25:
-        return {
-            "modifier": -10,
-            "status": "🟢 fear",
-            "reason": "no_exit_euphoria"
-        }
-
-    return {
-        "modifier": 0,
-        "status": "🟡 neutral",
-        "reason": "sentiment_neutral"
-    }
-
-
-def calculate_exit_signal(symbol, coin_data):
-    score = 0
-    reasons = []
-
-    change = coin_data.get("usd_24h_change")
-    volume = coin_data.get("usd_24h_vol")
-    price = coin_data.get("usd")
-    rsi = coin_data.get("rsi_14d")
-    atr = coin_data.get("atr_14d")
-
-    liquidity = classify_liquidity(volume)
-
-    if change is not None:
-        if change > 15:
-            score += 20
-            reasons.append("strong_24h_expansion")
-        elif change > 8:
-            score += 10
-            reasons.append("moderate_24h_expansion")
-        elif change < -10:
-            score -= 15
-            reasons.append("weak_momentum")
-
-    if volume is not None:
-        if volume > 100_000_000:
-            score += 5
-            reasons.append("strong_volume")
-        elif volume < 5_000_000:
-            score -= 10
-            reasons.append("low_liquidity")
-
-    if symbol == "XRP":
-        return {
-            "signal": "HOLD_NO_SELL_TARGET",
-            "score": 0,
-            "sell_pct": 0,
-            "liquidity": liquidity,
-            "price": price,
-            "change_24h": change,
-            "volume_24h": volume,
-            "rsi_14d": rsi,
-            "atr_14d": atr,
-            "reasons": ["xrp_is_not_sell_target"]
-        }
-
-    if score >= 45:
-        signal = "PREPARE_PARTIAL_EXIT"
-        sell_pct = 10
-    elif score >= 25:
-        signal = "WATCH_EXIT_ZONE"
-        sell_pct = 0
-    else:
-        signal = "HOLD"
-        sell_pct = 0
-
-    return {
-        "signal": signal,
-        "score": score,
-        "sell_pct": sell_pct,
-        "liquidity": liquidity,
-        "price": price,
-        "change_24h": change,
-        "volume_24h": volume,
-        "rsi_14d": rsi,
-        "atr_14d": atr,
-        "reasons": reasons
-    }
-
+    return score, reasons
 
 def build_exit_engine(snapshot):
     coins = snapshot.get("coins", {})
-    btc = snapshot.get("btc", {})
+    signals = {}
+    total_score = 0
 
-    btc_dom = btc.get("dominance")
-    fear_greed = btc.get("fear_greed")
+    for symbol, data in coins.items():
+        score, reasons = score_indicators(data)
 
-    btc_mod = btc_dominance_modifier(btc_dom)
-    sentiment_mod = fear_greed_modifier(fear_greed)
+        change = data.get("usd_24h_change")
+        volume = data.get("usd_24h_vol")
+        liquidity = classify_liquidity(volume)
 
-    signals = {
-        symbol: calculate_exit_signal(symbol, data)
-        for symbol, data in coins.items()
-    }
+        if change is not None:
+            if change > 15:
+                score += 20; reasons.append("strong_24h_expansion")
+            elif change < -10:
+                score -= 15; reasons.append("weak_momentum")
 
-    coin_score = sum(
-        item["score"] for item in signals.values()
-        if isinstance(item.get("score"), (int, float))
-    )
+        if volume is not None:
+            if volume > 100_000_000:
+                score += 5; reasons.append("strong_volume")
+            elif volume < 5_000_000:
+                score -= 10; reasons.append("low_liquidity")
 
-    exit_zone_score = coin_score + btc_mod["modifier"] + sentiment_mod["modifier"]
+        if symbol == "XRP":
+            signal, sell_pct, score = "HOLD_NO_SELL_TARGET", 0, 0
+            reasons = ["xrp_is_not_sell_target"]
+        elif score >= 45:
+            signal, sell_pct = "WATCH_EXIT_ZONE", 0
+        elif score >= 25:
+            signal, sell_pct = "REDUCE_RISK", 10
+        else:
+            signal, sell_pct = "HOLD", 0
 
-    if exit_zone_score >= 90:
-        global_action = "EXIT_ZONE_ACTIVE"
-    elif exit_zone_score >= 50:
-        global_action = "EXIT_ZONE_WATCH"
-    else:
-        global_action = "NO_FULL_EXIT"
+        total_score += score
+
+        signals[symbol] = {
+            "signal": signal,
+            "score": score,
+            "sell_pct": sell_pct,
+            "liquidity": liquidity,
+            "price": data.get("usd"),
+            "change_24h": change,
+            "volume_24h": volume,
+            "rsi_14d": data.get("rsi_14d"),
+            "atr_14d": data.get("atr_14d"),
+            "trend": data.get("trend"),
+            "reasons": reasons
+        }
 
     return {
-        "engine_version": "0.4",
+        "engine_version": "0.4-phase-3b",
         "engine_status": "active",
-        "global_action": global_action,
-        "exit_zone_score": exit_zone_score,
-        "score_components": {
-            "coin_score": coin_score,
-            "btc_dominance_modifier": btc_mod,
-            "fear_greed_modifier": sentiment_mod
-        },
+        "global_action": "NO_FULL_EXIT" if total_score < 50 else "EXIT_ZONE_WATCH",
+        "exit_zone_score": total_score,
+        "signals": signals,
         "guardrails": {
             "xrp_sell_allowed": False,
             "moonbags_sell_allowed": False,
             "full_exit_allowed_without_multi_category_confirmation": False
         },
-        "signals": signals,
         "missing_engine_data": snapshot.get("missing_data", [])
     }
