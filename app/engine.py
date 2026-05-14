@@ -10,6 +10,80 @@ def classify_liquidity(volume):
     return "🟢 strong"
 
 
+def btc_dominance_modifier(btc_dominance):
+    if btc_dominance is None:
+        return {
+            "modifier": 0,
+            "status": "⚪ unknown",
+            "reason": "btc_dominance_missing"
+        }
+
+    if btc_dominance >= 58:
+        return {
+            "modifier": -10,
+            "status": "🔴 alt_headwind",
+            "reason": "btc_dominance_high"
+        }
+
+    if btc_dominance <= 52:
+        return {
+            "modifier": 10,
+            "status": "🟢 alt_supportive",
+            "reason": "btc_dominance_low"
+        }
+
+    return {
+        "modifier": 0,
+        "status": "🟡 neutral",
+        "reason": "btc_dominance_neutral"
+    }
+
+
+def fear_greed_modifier(fear_greed):
+    if not fear_greed:
+        return {
+            "modifier": 0,
+            "status": "⚪ unknown",
+            "reason": "fear_greed_missing"
+        }
+
+    value = fear_greed.get("value")
+
+    if value is None:
+        return {
+            "modifier": 0,
+            "status": "⚪ unknown",
+            "reason": "fear_greed_missing"
+        }
+
+    if value >= 85:
+        return {
+            "modifier": 15,
+            "status": "🔴 extreme_greed",
+            "reason": "market_euphoria"
+        }
+
+    if value >= 70:
+        return {
+            "modifier": 8,
+            "status": "🟠 greed",
+            "reason": "risk_appetite_high"
+        }
+
+    if value <= 25:
+        return {
+            "modifier": -10,
+            "status": "🟢 fear",
+            "reason": "no_exit_euphoria"
+        }
+
+    return {
+        "modifier": 0,
+        "status": "🟡 neutral",
+        "reason": "sentiment_neutral"
+    }
+
+
 def calculate_exit_signal(symbol, coin_data):
     score = 0
     reasons = []
@@ -32,17 +106,6 @@ def calculate_exit_signal(symbol, coin_data):
         elif change < -10:
             score -= 15
             reasons.append("weak_momentum")
-
-    if rsi is not None:
-        if rsi >= 80:
-            score += 25
-            reasons.append("rsi_extreme")
-        elif rsi >= 70:
-            score += 15
-            reasons.append("rsi_overbought")
-        elif rsi <= 35:
-            score -= 10
-            reasons.append("rsi_weak")
 
     if volume is not None:
         if volume > 100_000_000:
@@ -92,16 +155,25 @@ def calculate_exit_signal(symbol, coin_data):
 
 def build_exit_engine(snapshot):
     coins = snapshot.get("coins", {})
+    btc = snapshot.get("btc", {})
+
+    btc_dom = btc.get("dominance")
+    fear_greed = btc.get("fear_greed")
+
+    btc_mod = btc_dominance_modifier(btc_dom)
+    sentiment_mod = fear_greed_modifier(fear_greed)
 
     signals = {
         symbol: calculate_exit_signal(symbol, data)
         for symbol, data in coins.items()
     }
 
-    exit_zone_score = sum(
+    coin_score = sum(
         item["score"] for item in signals.values()
         if isinstance(item.get("score"), (int, float))
     )
+
+    exit_zone_score = coin_score + btc_mod["modifier"] + sentiment_mod["modifier"]
 
     if exit_zone_score >= 90:
         global_action = "EXIT_ZONE_ACTIVE"
@@ -111,21 +183,20 @@ def build_exit_engine(snapshot):
         global_action = "NO_FULL_EXIT"
 
     return {
-        "engine_version": "0.3",
+        "engine_version": "0.4",
         "engine_status": "active",
         "global_action": global_action,
         "exit_zone_score": exit_zone_score,
+        "score_components": {
+            "coin_score": coin_score,
+            "btc_dominance_modifier": btc_mod,
+            "fear_greed_modifier": sentiment_mod
+        },
         "guardrails": {
             "xrp_sell_allowed": False,
             "moonbags_sell_allowed": False,
             "full_exit_allowed_without_multi_category_confirmation": False
         },
         "signals": signals,
-        "missing_engine_data": [
-            "funding",
-            "open_interest",
-            "btc_dominance",
-            "cbbi",
-            "pi_cycle"
-        ]
+        "missing_engine_data": snapshot.get("missing_data", [])
     }
