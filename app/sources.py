@@ -1,16 +1,8 @@
-from datetime import datetime, timezone
 import os
-import time
 import httpx
+import statistics
 
-from .indicators import (
-    calculate_rsi,
-    calculate_atr_proxy,
-    classify_volatility,
-    classify_trend_from_closes
-)
-
-CACHE = {"snapshot": None, "timestamp": 0}
+CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "7200"))
 
 COINS = {
     "XRP": "ripple",
@@ -19,222 +11,183 @@ COINS = {
     "CFG": "centrifuge"
 }
 
-CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "7200"))
-ENABLE_INDICATORS = os.getenv("ENABLE_INDICATORS", "true").lower() == "true"
+BINANCE_SYMBOLS = {
+    "XRP": "XRPUSDT",
+    "ONDO": "ONDOUSDT",
+    "AERO": "AEROUSDT",
+    "CFG": "CFGUSDT"
+}
 
 
-def now_iso():
-    return datetime.now(timezone.utc).isoformat()
+async def fetch_coin_prices():
+    ids = ",".join(COINS.values())
+
+    url = (
+        "https://api.coingecko.com/api/v3/simple/price"
+        f"?ids={ids}"
+        "&vs_currencies=usd"
+        "&include_market_cap=true"
+        "&include_24hr_vol=true"
+        "&include_24hr_change=true"
+    )
+
+    async with httpx.AsyncClient(timeout=20) as client:
+        response = await client.get(url)
+
+        if response.status_code != 200:
+            return None
+
+        return response.json()
 
 
-def cache_valid():
-    return CACHE["snapshot"] is not None and time.time() - CACHE["timestamp"] < CACHE_TTL_SECONDS
+async def fetch_binance_klines(symbol: str):
+    url = (
+        "https://api.binance.com/api/v3/klines"
+        f"?symbol={symbol}"
+        "&interval=1d"
+        "&limit=30"
+    )
+
+    async with httpx.AsyncClient(timeout=20) as client:
+        response = await client.get(url)
+
+        if response.status_code != 200:
+            return None
+
+        return response.json()
 
 
-def classify_trend_from_change(change_24h):
-    if change_24h is None:
-        return "⚪ unknown"
-    if change_24h >= 8:
-        return "🟢 strong_uptrend"
-    if change_24h >= 2:
-        return "🟢 uptrend"
-    if change_24h <= -8:
-        return "🔴 breakdown"
-    if change_24h <= -2:
+def calculate_rsi(closes, period=14):
+    if len(closes) < period + 1:
+        return None
+
+    gains = []
+    losses = []
+
+    for i in range(1, len(closes)):
+        diff = closes[i] - closes[i - 1]
+
+        if diff >= 0:
+            gains.append(diff)
+            losses.append(0)
+        else:
+            gains.append(0)
+            losses.append(abs(diff))
+
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+
+    if avg_loss == 0:
+        return 100
+
+    rs = avg_gain / avg_loss
+
+    return round(100 - (100 / (1 + rs)), 2)
+
+
+def calculate_atr(klines, period=14):
+    if len(klines) < period + 1:
+        return None
+
+    trs = []
+
+    for i in range(1, len(klines)):
+        high = float(klines[i][2])
+        low = float(klines[i][3])
+        prev_close = float(klines[i - 1][4])
+
+        tr = max(
+            high - low,
+            abs(high - prev_close),
+            abs(low - prev_close)
+        )
+
+        trs.append(tr)
+
+    return round(sum(trs[:period]) / period, 4)
+
+
+def classify_volatility(atr, price):
+    if atr is None or price <= 0:
+        return "⚪ unavailable"
+
+    ratio = atr / price
+
+    if ratio < 0.02:
+        return "🟢 low"
+
+    if ratio < 0.05:
+        return "🟡 medium"
+
+    return "🔴 high"
+
+
+def classify_trend(change_24h):
+    if change_24h >= 3:
+        return "🟢 strengthening"
+
+    if change_24h <= -3:
         return "🟠 weakening"
+
     return "🟡 sideways"
 
 
-async def get_json(url, params=None):
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            r = await client.get(url, params=params)
-            if r.status_code == 429:
-                return None
-            r.raise_for_status()
-            return r.json()
-    except Exception:
-        return None
+async def get_market_snapshot():
 
-
-async def get_prices():
-    return await get_json(
-        "https://api.coingecko.com/api/v3/simple/price",
-        {
-            "ids": ",".join(COINS.values()),
-            "vs_currencies": "usd",
-            "include_market_cap": "true",
-            "include_24hr_vol": "true",
-            "include_24hr_change": "true"
-        }
-    )
-
-
-async def get_market_chart(coin_id, current_price):
-    if not ENABLE_INDICATORS:
-        return {
-            "rsi_14d": None,
-            "atr_14d": None,
-            "volatility": "⚪ disabled",
-            "trend": "⚪ disabled",
-            "indicator_method": "disabled"
-        }
-
-    data = await get_json(
-        f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart",
-        {
-            "vs_currency": "usd",
-            "days": "45",
-            "interval": "daily"
-        }
-    )
-
-    if not data:
-        return {
-            "rsi_14d": None,
-            "atr_14d": None,
-            "volatility": "⚪ unavailable",
-            "trend": None,
-            "indicator_method": "unavailable_rate_limit"
-        }
-
-    prices = data.get("prices", [])
-    closes = [p[1] for p in prices if len(p) >= 2]
-
-    rsi = calculate_rsi(closes)
-    atr = calculate_atr_proxy(closes)
-    trend = classify_trend_from_closes(closes)
-    volatility = classify_volatility(current_price, atr)
-
-    return {
-        "rsi_14d": rsi,
-        "atr_14d": atr,
-        "volatility": volatility,
-        "trend": trend,
-        "indicator_method": "coingecko_45d_close_proxy"
-    }
-
-
-async def get_btc_dominance():
-    data = await get_json("https://api.coingecko.com/api/v3/global")
-    if not data:
-        return None
-    return data.get("data", {}).get("market_cap_percentage", {}).get("btc")
-
-
-async def get_fear_greed():
-    data = await get_json("https://api.alternative.me/fng/")
-    if not data:
-        return None
-
-    item = data.get("data", [{}])[0]
-
-    try:
-        value = int(item.get("value"))
-    except Exception:
-        value = None
-
-    return {
-        "value": value,
-        "classification": item.get("value_classification")
-    }
-
-
-async def build_exit_snapshot():
-    if cache_valid():
-        cached = CACHE["snapshot"].copy()
-        cached["cache_mode"] = "fresh_cache"
-        return cached
-
-    prices = await get_prices()
-    btc_dominance = await get_btc_dominance()
-    fear_greed = await get_fear_greed()
-
-    if not prices and CACHE["snapshot"]:
-        cached = CACHE["snapshot"].copy()
-        cached["timestamp"] = now_iso()
-        cached["status"] = "degraded"
-        cached["cache_mode"] = "fallback_active"
-        cached["api_error"] = "coingecko_rate_limited_using_cached_data"
-        return cached
+    prices = await fetch_coin_prices()
 
     if not prices:
         return {
-            "timestamp": now_iso(),
             "status": "degraded",
-            "source": "exit-data-pipeline",
-            "cache_mode": "no_cache_available",
-            "api_error": "coingecko_unavailable_or_rate_limited",
-            "coins": {},
-            "btc": {
-                "dominance": btc_dominance,
-                "fear_greed": fear_greed
-            },
             "missing_data": ["live_market_data"]
         }
 
     coins = {}
 
-    for symbol, coin_id in COINS.items():
-        base = prices.get(coin_id, {})
-        price = base.get("usd")
-        change = base.get("usd_24h_change")
+    for ticker, cg_id in COINS.items():
 
-        indicators = await get_market_chart(coin_id, price)
-        trend = indicators.get("trend") or classify_trend_from_change(change)
+        coin = prices.get(cg_id, {})
 
-        coins[symbol] = {
-            **base,
-            **indicators,
-            "trend": trend,
-            "trend_fallback": "24h_change_proxy" if indicators.get("trend") is None else "market_chart_ma"
+        price = coin.get("usd")
+        volume = coin.get("usd_24h_vol", 0)
+        change_24h = coin.get("usd_24h_change", 0)
+        market_cap = coin.get("usd_market_cap", 0)
+
+        rsi = None
+        atr = None
+        volatility = "⚪ unavailable"
+
+        symbol = BINANCE_SYMBOLS.get(ticker)
+
+        if symbol:
+
+            klines = await fetch_binance_klines(symbol)
+
+            if klines:
+
+                closes = [float(k[4]) for k in klines]
+
+                rsi = calculate_rsi(closes)
+
+                atr = calculate_atr(klines)
+
+                if atr and price:
+                    volatility = classify_volatility(atr, price)
+
+        coins[ticker] = {
+            "usd": price,
+            "usd_market_cap": market_cap,
+            "usd_24h_vol": volume,
+            "usd_24h_change": change_24h,
+            "rsi_14d": rsi,
+            "atr_14d": atr,
+            "volatility": volatility,
+            "trend": classify_trend(change_24h)
         }
 
-    altseason_index = None
-    stablecoin_regime = None
-
-    if btc_dominance is not None:
-        altseason_index = round(max(0, 100 - btc_dominance), 2)
-
-    if fear_greed and fear_greed.get("value") is not None:
-        fg = fear_greed["value"]
-        if fg <= 25:
-            stablecoin_regime = "🟢 defensive_rotation"
-        elif fg >= 75:
-            stablecoin_regime = "🔴 euphoric_risk"
-        else:
-            stablecoin_regime = "🟡 neutral"
-
-    snapshot = {
-        "timestamp": now_iso(),
+    return {
+        "timestamp": "live",
         "status": "ok",
-        "source": "exit-data-pipeline",
-        "cache_mode": "live",
         "cache_ttl_seconds": CACHE_TTL_SECONDS,
-        "free_rate_limit_mode": True,
-        "indicators_enabled": ENABLE_INDICATORS,
-        "coins": coins,
-        "raw_prices": prices,
-        "btc": {
-            "dominance": btc_dominance,
-            "fear_greed": fear_greed,
-            "altseason_index": altseason_index,
-            "stablecoin_regime": stablecoin_regime,
-            "cbbi": None,
-            "pi_cycle": {
-                "status": "unknown",
-                "distance_pct": None
-            }
-        },
-        "missing_data": [
-            "cbbi",
-            "pi_cycle",
-            "funding_live",
-            "open_interest_live"
-        ]
+        "coins": coins
     }
-
-    CACHE["snapshot"] = snapshot
-    CACHE["timestamp"] = time.time()
-
-    return snapshot
