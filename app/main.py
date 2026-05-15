@@ -1,5 +1,6 @@
 import os
 import time
+import asyncio
 from datetime import datetime, timezone
 
 import httpx
@@ -13,10 +14,15 @@ app = FastAPI(title="EXIT PLAN v10.1 Live Engine")
 
 ALERT_CACHE = {
     "last_alert_ts": 0,
-    "last_message": None
+    "last_message": None,
+    "last_scan_ts": 0,
+    "last_scan_result": None
 }
 
 ALERT_COOLDOWN_SECONDS = int(os.getenv("ALERT_COOLDOWN_SECONDS", "3600"))
+AUTO_SCAN_ENABLED = os.getenv("AUTO_SCAN_ENABLED", "true").lower() == "true"
+SCAN_INTERVAL_SECONDS = int(os.getenv("SCAN_INTERVAL_SECONDS", "1800"))
+
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
@@ -44,23 +50,20 @@ def should_alert(engine):
 
 
 def build_alert_message(engine):
-    lines = []
-
-    lines.append("🚨 EXIT PLAN v10.1 ALERT")
-    lines.append(f"Time: {now_iso()}")
-    lines.append(f"Global action: {engine.get('global_action')}")
-    lines.append(f"Exit zone score: {engine.get('exit_zone_score')}")
-    lines.append("")
+    lines = [
+        "🚨 EXIT PLAN v10.1 ALERT",
+        f"Time: {now_iso()}",
+        f"Global action: {engine.get('global_action')}",
+        f"Exit zone score: {engine.get('exit_zone_score')}",
+        ""
+    ]
 
     for symbol, coin in engine.get("signals", {}).items():
         signal = coin.get("signal")
-        sell_pct = coin.get("sell_pct")
-        liquidity = coin.get("liquidity")
-        score = coin.get("score")
-
         if signal not in ["HOLD", "HOLD_NO_SELL_TARGET"]:
             lines.append(
-                f"{symbol}: {signal} | sell {sell_pct}% | score {score} | liquidity {liquidity}"
+                f"{symbol}: {signal} | sell {coin.get('sell_pct')}% | "
+                f"score {coin.get('score')} | liquidity {coin.get('liquidity')}"
             )
 
     if len(lines) <= 5:
@@ -122,6 +125,44 @@ async def maybe_send_alert(engine):
     }
 
 
+async def run_scan():
+    snapshot = await build_exit_snapshot()
+    engine = build_exit_engine(snapshot)
+    alert_result = await maybe_send_alert(engine)
+
+    result = {
+        "timestamp": now_iso(),
+        "scan_status": "ok",
+        "alert_result": alert_result,
+        "engine": engine
+    }
+
+    ALERT_CACHE["last_scan_ts"] = time.time()
+    ALERT_CACHE["last_scan_result"] = result
+
+    return result
+
+
+async def auto_scan_loop():
+    await asyncio.sleep(10)
+
+    while True:
+        if AUTO_SCAN_ENABLED:
+            try:
+                await run_scan()
+                print(f"AUTO SCAN OK: {now_iso()}")
+            except Exception as e:
+                print(f"AUTO SCAN ERROR: {e}")
+
+        await asyncio.sleep(SCAN_INTERVAL_SECONDS)
+
+
+@app.on_event("startup")
+async def startup_event():
+    if AUTO_SCAN_ENABLED:
+        asyncio.create_task(auto_scan_loop())
+
+
 @app.get("/health")
 async def health():
     return {
@@ -143,15 +184,16 @@ async def get_exit_engine():
 
 @app.get("/market/scan")
 async def scan_market():
-    snapshot = await build_exit_snapshot()
-    engine = build_exit_engine(snapshot)
-    alert_result = await maybe_send_alert(engine)
+    return await run_scan()
 
+
+@app.get("/automation/status")
+async def automation_status():
     return {
-        "timestamp": now_iso(),
-        "scan_status": "ok",
-        "alert_result": alert_result,
-        "engine": engine
+        "auto_scan_enabled": AUTO_SCAN_ENABLED,
+        "scan_interval_seconds": SCAN_INTERVAL_SECONDS,
+        "last_scan_ts": ALERT_CACHE["last_scan_ts"],
+        "last_scan_result": ALERT_CACHE["last_scan_result"]
     }
 
 
@@ -204,7 +246,6 @@ async def dashboard():
             border-radius: 12px;
             padding: 16px;
         }
-        .good { color: #22c55e; }
         .warn { color: #facc15; }
         .bad { color: #ef4444; }
         .muted { color: #9ca3af; }
@@ -249,9 +290,9 @@ async def dashboard():
 
         <div class="card">
             <h2>Automation</h2>
-            <p>Scan endpoint: <code>/market/scan</code></p>
-            <p>Alert status: <code>/alerts/status</code></p>
-            <p>Telegram test: <code>/alerts/test</code></p>
+            <p>Auto scan: <span id="auto_scan">...</span></p>
+            <p>Interval: <span id="scan_interval">...</span> sec</p>
+            <p>Last scan: <span id="last_scan">...</span></p>
             <p id="scan_result" class="muted">No scan yet.</p>
         </div>
     </div>
@@ -315,6 +356,8 @@ async function loadData() {
 
     document.getElementById('raw').innerText =
         JSON.stringify(data, null, 2);
+
+    loadAutomation();
 }
 
 async function scanMarket() {
@@ -323,6 +366,15 @@ async function scanMarket() {
     document.getElementById('scan_result').innerText =
         JSON.stringify(data.alert_result, null, 2);
     loadData();
+}
+
+async function loadAutomation() {
+    const res = await fetch('/automation/status');
+    const data = await res.json();
+
+    document.getElementById('auto_scan').innerText = data.auto_scan_enabled;
+    document.getElementById('scan_interval').innerText = data.scan_interval_seconds;
+    document.getElementById('last_scan').innerText = data.last_scan_ts;
 }
 
 loadData();
