@@ -30,6 +30,49 @@ def execution_limit(liquidity):
     return 0.03
 
 
+def reentry_status(fear_greed, trend, volatility):
+    if fear_greed is None:
+        return {
+            "status": "WAIT",
+            "deploy_pct": 0,
+            "reason": "missing_sentiment"
+        }
+
+    if fear_greed <= 25 and trend in ["🟠 weakening", "🔴 breakdown"]:
+        return {
+            "status": "ACCUMULATION_ZONE",
+            "deploy_pct": 10,
+            "reason": "fear_extreme"
+        }
+
+    if (
+        fear_greed <= 40
+        and trend in ["🟡 sideways", "🟢 strengthening"]
+        and volatility in ["🟢 low", "🟡 medium"]
+    ):
+        return {
+            "status": "DCA_REENTRY",
+            "deploy_pct": 20,
+            "reason": "trend_stabilizing"
+        }
+
+    if (
+        fear_greed >= 65
+        and trend in ["🟢 strengthening", "🟢 uptrend"]
+    ):
+        return {
+            "status": "MOMENTUM_REENTRY",
+            "deploy_pct": 5,
+            "reason": "trend_confirmation"
+        }
+
+    return {
+        "status": "WAIT",
+        "deploy_pct": 0,
+        "reason": "conditions_not_met"
+    }
+
+
 def trigger_matrix(symbol, data, macro_score):
     confirmations = []
     blockers = []
@@ -40,6 +83,7 @@ def trigger_matrix(symbol, data, macro_score):
     rsi = data.get("rsi_14d")
     trend = data.get("trend")
     volatility = data.get("volatility")
+
     liquidity = classify_liquidity(volume)
 
     if symbol == "XRP":
@@ -83,10 +127,10 @@ def trigger_matrix(symbol, data, macro_score):
         score -= 10
         blockers.append("trend_weakening")
 
-    if volatility in ["🔴 high", "🔴 high_volatility", "🟠 elevated", "🟠 elevated_volatility"]:
+    if volatility in ["🔴 high", "🟠 elevated"]:
         score += 5
         confirmations.append("volatility_expansion")
-    elif volatility is None or "unavailable" in str(volatility):
+    elif volatility is None:
         blockers.append("volatility_missing")
 
     if liquidity == "🟢 strong":
@@ -114,9 +158,6 @@ def trigger_matrix(symbol, data, macro_score):
     elif score >= 25:
         signal = "SELL_10"
         sell_pct = 10
-    elif score <= -25:
-        signal = "DEFENSIVE_HOLD"
-        sell_pct = 0
     else:
         signal = "HOLD"
         sell_pct = 0
@@ -131,11 +172,38 @@ def trigger_matrix(symbol, data, macro_score):
     }
 
 
+def build_reentry_engine(snapshot):
+    coins = snapshot.get("coins", {})
+    btc = snapshot.get("btc", {})
+
+    fg = btc.get("fear_greed", {})
+    fg_value = fg.get("value")
+
+    reentry = {}
+
+    for symbol, data in coins.items():
+        trend = data.get("trend")
+        volatility = data.get("volatility")
+
+        result = reentry_status(
+            fg_value,
+            trend,
+            volatility
+        )
+
+        reentry[symbol] = {
+            "reentry_status": result["status"],
+            "deploy_pct": result["deploy_pct"],
+            "reason": result["reason"],
+            "trend": trend,
+            "volatility": volatility
+        }
+
+    return reentry
+
+
 def build_allocation_plan(signals, global_action, exit_zone_score):
     stablecoin_target_pct = 0
-    xrp_allocation_action = "HOLD_10_YEAR_CORE"
-    ondo_allocation_action = "MAINTAIN_CORE_RWA_POSITION"
-    dca_out_ladder = []
 
     if global_action == "RISK_OFF":
         stablecoin_target_pct = 70
@@ -143,8 +211,8 @@ def build_allocation_plan(signals, global_action, exit_zone_score):
         stablecoin_target_pct = 35
     elif exit_zone_score >= 25:
         stablecoin_target_pct = 15
-    else:
-        stablecoin_target_pct = 0
+
+    dca_out_ladder = []
 
     for symbol, signal in signals.items():
         if symbol == "XRP":
@@ -158,25 +226,14 @@ def build_allocation_plan(signals, global_action, exit_zone_score):
                 "symbol": symbol,
                 "sell_pct": sell_pct,
                 "sell_qty": sell_qty,
-                "execution": "split_into_3_to_5_limit_orders",
-                "destination": "stablecoin_bucket",
+                "execution": "split_into_5_limit_orders",
                 "moonbag_protected": True
             })
 
     return {
-        "stablecoin_allocation": {
-            "target_pct_of_realized_sales": stablecoin_target_pct,
-            "status": "ACCUMULATE_STABLES" if stablecoin_target_pct > 0 else "NO_NEW_STABLECOIN_ACTION",
-            "rule": "only_from_confirmed_sell_signals"
-        },
-        "xrp_allocation": {
-            "action": xrp_allocation_action,
-            "sell_allowed": False
-        },
-        "ondo_allocation": {
-            "action": ondo_allocation_action,
-            "priority": "core_position_above_AERO_CFG"
-        },
+        "stablecoin_target_pct": stablecoin_target_pct,
+        "xrp_policy": "never_sell_core",
+        "ondo_policy": "maintain_core_rwa_position",
         "dca_out_ladder": dca_out_ladder
     }
 
@@ -215,22 +272,13 @@ def build_exit_engine(snapshot):
         if altseason_index >= 45:
             macro_score += 10
             macro_reasons.append("altseason_supportive")
-        elif altseason_index <= 38:
-            macro_score -= 10
-            macro_reasons.append("btc_dominance_heavy")
-
-    if stablecoin_regime == "🔴 euphoric_risk":
-        macro_score += 10
-        macro_reasons.append("euphoria_expansion")
-    elif stablecoin_regime == "🟢 defensive_rotation":
-        macro_score -= 10
-        macro_reasons.append("defensive_stablecoin_rotation")
 
     signals = {}
     total_score = macro_score
 
     for symbol, data in coins.items():
         trigger = trigger_matrix(symbol, data, macro_score)
+
         sellable = PORTFOLIO.get(symbol, {}).get("sellable", 0)
 
         liquidity = trigger["liquidity"]
@@ -238,6 +286,7 @@ def build_exit_engine(snapshot):
 
         raw_sell_qty = sellable * (trigger["sell_pct"] / 100)
         max_daily_qty = sellable * daily_limit
+
         sell_qty = min(raw_sell_qty, max_daily_qty)
 
         if symbol == "XRP":
@@ -267,10 +316,16 @@ def build_exit_engine(snapshot):
     else:
         global_action = "NO_FULL_EXIT"
 
-    allocation_plan = build_allocation_plan(signals, global_action, total_score)
+    allocation_plan = build_allocation_plan(
+        signals,
+        global_action,
+        total_score
+    )
+
+    reentry_engine = build_reentry_engine(snapshot)
 
     return {
-        "engine_version": "1.1-phase-11-allocation-engine",
+        "engine_version": "1.2-phase-12-reentry-engine",
         "engine_status": "active",
         "global_action": global_action,
         "exit_zone_score": total_score,
@@ -287,12 +342,8 @@ def build_exit_engine(snapshot):
             "full_exit_allowed_without_multi_category_confirmation": False,
             "slippage_above_5pct_allowed": False
         },
-        "execution_engine": {
-            "execution_type": "limit_or_ladder_only",
-            "moonbags_protected": True,
-            "liquidity_respect_required": True
-        },
         "allocation_plan": allocation_plan,
+        "reentry_engine": reentry_engine,
         "signals": signals,
         "missing_engine_data": snapshot.get("missing_data", [])
     }
