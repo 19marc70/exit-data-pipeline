@@ -1,7 +1,7 @@
 PORTFOLIO = {
-    "ONDO": {"sellable": 19139, "moonbag": 1925},
-    "AERO": {"sellable": 9250, "moonbag": 750},
-    "CFG": {"sellable": 9639, "moonbag": 744},
+    "ONDO": {"sellable": 21369.0243205, "moonbag": 1925},
+    "AERO": {"sellable": 10000.55320756, "moonbag": 750},
+    "CFG": {"sellable": 10383.73602082, "moonbag": 744},
     "XRP": {"sellable": 0, "moonbag": 11093}
 }
 
