@@ -1,7 +1,9 @@
 import os
+import time
 import httpx
-import statistics
+from datetime import datetime, timezone
 
+CACHE = {"snapshot": None, "timestamp": 0}
 CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "7200"))
 
 COINS = {
@@ -19,69 +21,44 @@ BINANCE_SYMBOLS = {
 }
 
 
-async def fetch_coin_prices():
-    ids = ",".join(COINS.values())
-
-    url = (
-        "https://api.coingecko.com/api/v3/simple/price"
-        f"?ids={ids}"
-        "&vs_currencies=usd"
-        "&include_market_cap=true"
-        "&include_24hr_vol=true"
-        "&include_24hr_change=true"
-    )
-
-    async with httpx.AsyncClient(timeout=20) as client:
-        response = await client.get(url)
-
-        if response.status_code != 200:
-            return None
-
-        return response.json()
+def now_iso():
+    return datetime.now(timezone.utc).isoformat()
 
 
-async def fetch_binance_klines(symbol: str):
-    url = (
-        "https://api.binance.com/api/v3/klines"
-        f"?symbol={symbol}"
-        "&interval=1d"
-        "&limit=30"
-    )
+def cache_valid():
+    return CACHE["snapshot"] is not None and time.time() - CACHE["timestamp"] < CACHE_TTL_SECONDS
 
-    async with httpx.AsyncClient(timeout=20) as client:
-        response = await client.get(url)
 
-        if response.status_code != 200:
-            return None
-
-        return response.json()
+async def get_json(url, params=None):
+    try:
+        async with httpx.AsyncClient(timeout=25) as client:
+            r = await client.get(url, params=params)
+            if r.status_code == 429:
+                return None
+            r.raise_for_status()
+            return r.json()
+    except Exception:
+        return None
 
 
 def calculate_rsi(closes, period=14):
     if len(closes) < period + 1:
         return None
 
-    gains = []
-    losses = []
+    gains, losses = [], []
 
     for i in range(1, len(closes)):
         diff = closes[i] - closes[i - 1]
+        gains.append(max(diff, 0))
+        losses.append(abs(min(diff, 0)))
 
-        if diff >= 0:
-            gains.append(diff)
-            losses.append(0)
-        else:
-            gains.append(0)
-            losses.append(abs(diff))
-
-    avg_gain = sum(gains[:period]) / period
-    avg_loss = sum(losses[:period]) / period
+    avg_gain = sum(gains[-period:]) / period
+    avg_loss = sum(losses[-period:]) / period
 
     if avg_loss == 0:
-        return 100
+        return 100.0
 
     rs = avg_gain / avg_loss
-
     return round(100 - (100 / (1 + rs)), 2)
 
 
@@ -101,93 +78,192 @@ def calculate_atr(klines, period=14):
             abs(high - prev_close),
             abs(low - prev_close)
         )
-
         trs.append(tr)
 
-    return round(sum(trs[:period]) / period, 4)
+    return round(sum(trs[-period:]) / period, 6)
 
 
-def classify_volatility(atr, price):
-    if atr is None or price <= 0:
+def classify_volatility(price, atr):
+    if price is None or atr is None or price == 0:
         return "⚪ unavailable"
 
-    ratio = atr / price
+    atr_pct = (atr / price) * 100
 
-    if ratio < 0.02:
-        return "🟢 low"
-
-    if ratio < 0.05:
+    if atr_pct >= 10:
+        return "🔴 high"
+    if atr_pct >= 5:
+        return "🟠 elevated"
+    if atr_pct >= 2:
         return "🟡 medium"
-
-    return "🔴 high"
+    return "🟢 low"
 
 
 def classify_trend(change_24h):
+    if change_24h is None:
+        return "⚪ unknown"
     if change_24h >= 3:
         return "🟢 strengthening"
-
     if change_24h <= -3:
         return "🟠 weakening"
-
     return "🟡 sideways"
 
 
-async def get_market_snapshot():
+async def get_prices():
+    return await get_json(
+        "https://api.coingecko.com/api/v3/simple/price",
+        {
+            "ids": ",".join(COINS.values()),
+            "vs_currencies": "usd",
+            "include_market_cap": "true",
+            "include_24hr_vol": "true",
+            "include_24hr_change": "true"
+        }
+    )
 
-    prices = await fetch_coin_prices()
+
+async def get_binance_klines(symbol):
+    return await get_json(
+        "https://api.binance.com/api/v3/klines",
+        {
+            "symbol": symbol,
+            "interval": "1d",
+            "limit": 30
+        }
+    )
+
+
+async def get_btc_dominance():
+    data = await get_json("https://api.coingecko.com/api/v3/global")
+    if not data:
+        return None
+    return data.get("data", {}).get("market_cap_percentage", {}).get("btc")
+
+
+async def get_fear_greed():
+    data = await get_json("https://api.alternative.me/fng/")
+    if not data:
+        return None
+
+    item = data.get("data", [{}])[0]
+
+    try:
+        value = int(item.get("value"))
+    except Exception:
+        value = None
+
+    return {
+        "value": value,
+        "classification": item.get("value_classification")
+    }
+
+
+async def build_exit_snapshot():
+    if cache_valid():
+        cached = CACHE["snapshot"].copy()
+        cached["cache_mode"] = "fresh_cache"
+        return cached
+
+    prices = await get_prices()
+    btc_dominance = await get_btc_dominance()
+    fear_greed = await get_fear_greed()
+
+    if not prices and CACHE["snapshot"]:
+        cached = CACHE["snapshot"].copy()
+        cached["timestamp"] = now_iso()
+        cached["status"] = "degraded"
+        cached["cache_mode"] = "fallback_active"
+        cached["api_error"] = "rate_limited_using_cached_data"
+        return cached
 
     if not prices:
         return {
+            "timestamp": now_iso(),
             "status": "degraded",
+            "source": "exit-data-pipeline",
+            "cache_mode": "no_cache_available",
+            "api_error": "market_data_unavailable",
+            "coins": {},
+            "btc": {
+                "dominance": btc_dominance,
+                "fear_greed": fear_greed
+            },
             "missing_data": ["live_market_data"]
         }
 
     coins = {}
 
-    for ticker, cg_id in COINS.items():
-
-        coin = prices.get(cg_id, {})
-
-        price = coin.get("usd")
-        volume = coin.get("usd_24h_vol", 0)
-        change_24h = coin.get("usd_24h_change", 0)
-        market_cap = coin.get("usd_market_cap", 0)
+    for symbol, coin_id in COINS.items():
+        base = prices.get(coin_id, {})
+        price = base.get("usd")
+        change_24h = base.get("usd_24h_change")
+        binance_symbol = BINANCE_SYMBOLS.get(symbol)
 
         rsi = None
         atr = None
         volatility = "⚪ unavailable"
+        indicator_method = "unavailable"
 
-        symbol = BINANCE_SYMBOLS.get(ticker)
+        klines = await get_binance_klines(binance_symbol) if binance_symbol else None
 
-        if symbol:
+        if klines:
+            closes = [float(k[4]) for k in klines]
+            rsi = calculate_rsi(closes)
+            atr = calculate_atr(klines)
+            volatility = classify_volatility(price, atr)
+            indicator_method = "binance_1d_klines"
 
-            klines = await fetch_binance_klines(symbol)
-
-            if klines:
-
-                closes = [float(k[4]) for k in klines]
-
-                rsi = calculate_rsi(closes)
-
-                atr = calculate_atr(klines)
-
-                if atr and price:
-                    volatility = classify_volatility(atr, price)
-
-        coins[ticker] = {
-            "usd": price,
-            "usd_market_cap": market_cap,
-            "usd_24h_vol": volume,
-            "usd_24h_change": change_24h,
+        coins[symbol] = {
+            **base,
             "rsi_14d": rsi,
             "atr_14d": atr,
             "volatility": volatility,
-            "trend": classify_trend(change_24h)
+            "trend": classify_trend(change_24h),
+            "indicator_method": indicator_method
         }
 
-    return {
-        "timestamp": "live",
+    altseason_index = None
+    stablecoin_regime = None
+
+    if btc_dominance is not None:
+        altseason_index = round(max(0, 100 - btc_dominance), 2)
+
+    if fear_greed and fear_greed.get("value") is not None:
+        fg = fear_greed["value"]
+        if fg <= 25:
+            stablecoin_regime = "🟢 defensive_rotation"
+        elif fg >= 75:
+            stablecoin_regime = "🔴 euphoric_risk"
+        else:
+            stablecoin_regime = "🟡 neutral"
+
+    snapshot = {
+        "timestamp": now_iso(),
         "status": "ok",
+        "source": "exit-data-pipeline",
+        "cache_mode": "live",
         "cache_ttl_seconds": CACHE_TTL_SECONDS,
-        "coins": coins
+        "coins": coins,
+        "raw_prices": prices,
+        "btc": {
+            "dominance": btc_dominance,
+            "fear_greed": fear_greed,
+            "altseason_index": altseason_index,
+            "stablecoin_regime": stablecoin_regime,
+            "cbbi": None,
+            "pi_cycle": {
+                "status": "unknown",
+                "distance_pct": None
+            }
+        },
+        "missing_data": [
+            "cbbi",
+            "pi_cycle",
+            "funding_live",
+            "open_interest_live"
+        ]
     }
+
+    CACHE["snapshot"] = snapshot
+    CACHE["timestamp"] = time.time()
+
+    return snapshot
