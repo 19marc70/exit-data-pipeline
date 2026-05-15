@@ -38,10 +38,8 @@ def trigger_matrix(symbol, data, macro_score):
     change = data.get("usd_24h_change")
     volume = data.get("usd_24h_vol")
     rsi = data.get("rsi_14d")
-    atr = data.get("atr_14d")
     trend = data.get("trend")
     volatility = data.get("volatility")
-
     liquidity = classify_liquidity(volume)
 
     if symbol == "XRP":
@@ -103,9 +101,7 @@ def trigger_matrix(symbol, data, macro_score):
 
     score += macro_score
 
-    confirmation_count = len(confirmations)
-
-    if confirmation_count < 2:
+    if len(confirmations) < 2:
         signal = "HOLD"
         sell_pct = 0
         blockers.append("insufficient_multi_factor_confirmation")
@@ -141,6 +137,8 @@ def build_exit_engine(snapshot):
 
     btc_dominance = btc.get("dominance")
     fear_greed = btc.get("fear_greed", {})
+    altseason_index = btc.get("altseason_index")
+    stablecoin_regime = btc.get("stablecoin_regime")
 
     macro_score = 0
     macro_reasons = []
@@ -154,6 +152,7 @@ def build_exit_engine(snapshot):
             macro_reasons.append("btc_dominance_alt_supportive")
 
     fg_value = fear_greed.get("value") if isinstance(fear_greed, dict) else None
+
     if fg_value is not None:
         if fg_value >= 80:
             macro_score += 15
@@ -161,6 +160,21 @@ def build_exit_engine(snapshot):
         elif fg_value <= 25:
             macro_score -= 10
             macro_reasons.append("fear_no_euphoria")
+
+    if altseason_index is not None:
+        if altseason_index >= 45:
+            macro_score += 10
+            macro_reasons.append("altseason_supportive")
+        elif altseason_index <= 38:
+            macro_score -= 10
+            macro_reasons.append("btc_dominance_heavy")
+
+    if stablecoin_regime == "🔴 euphoric_risk":
+        macro_score += 10
+        macro_reasons.append("euphoria_expansion")
+    elif stablecoin_regime == "🟢 defensive_rotation":
+        macro_score -= 10
+        macro_reasons.append("defensive_stablecoin_rotation")
 
     signals = {}
     total_score = macro_score
@@ -204,13 +218,15 @@ def build_exit_engine(snapshot):
         global_action = "NO_FULL_EXIT"
 
     return {
-        "engine_version": "0.6-phase-7-trigger-matrix",
+        "engine_version": "0.7-phase-9-macro-intelligence",
         "engine_status": "active",
         "global_action": global_action,
         "exit_zone_score": total_score,
         "score_components": {
             "macro_score": macro_score,
-            "macro_reasons": macro_reasons
+            "macro_reasons": macro_reasons,
+            "altseason_index": altseason_index,
+            "stablecoin_regime": stablecoin_regime
         },
         "guardrails": {
             "xrp_sell_allowed": False,
