@@ -1,5 +1,8 @@
+import os
+import time
 from datetime import datetime, timezone
 
+import httpx
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 
@@ -8,12 +11,122 @@ from .engine import build_exit_engine
 
 app = FastAPI(title="EXIT PLAN v10.1 Live Engine")
 
+ALERT_CACHE = {
+    "last_alert_ts": 0,
+    "last_message": None
+}
+
+ALERT_COOLDOWN_SECONDS = int(os.getenv("ALERT_COOLDOWN_SECONDS", "3600"))
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
+
+def now_iso():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def alert_enabled():
+    return bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
+
+
+def should_alert(engine):
+    global_action = engine.get("global_action")
+    signals = engine.get("signals", {})
+
+    if global_action in ["RISK_OFF", "PARTIAL_EXIT_ALLOWED"]:
+        return True
+
+    for coin in signals.values():
+        if coin.get("signal") in ["SELL_10", "SELL_25", "SELL_50"]:
+            return True
+
+    return False
+
+
+def build_alert_message(engine):
+    lines = []
+
+    lines.append("🚨 EXIT PLAN v10.1 ALERT")
+    lines.append(f"Time: {now_iso()}")
+    lines.append(f"Global action: {engine.get('global_action')}")
+    lines.append(f"Exit zone score: {engine.get('exit_zone_score')}")
+    lines.append("")
+
+    for symbol, coin in engine.get("signals", {}).items():
+        signal = coin.get("signal")
+        sell_pct = coin.get("sell_pct")
+        liquidity = coin.get("liquidity")
+        score = coin.get("score")
+
+        if signal not in ["HOLD", "HOLD_NO_SELL_TARGET"]:
+            lines.append(
+                f"{symbol}: {signal} | sell {sell_pct}% | score {score} | liquidity {liquidity}"
+            )
+
+    if len(lines) <= 5:
+        lines.append("No active sell trigger. Monitoring only.")
+
+    return "\n".join(lines)
+
+
+async def send_telegram(message):
+    if not alert_enabled():
+        return {
+            "sent": False,
+            "reason": "telegram_not_configured"
+        }
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+
+    async with httpx.AsyncClient(timeout=20) as client:
+        response = await client.post(
+            url,
+            json={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": message
+            }
+        )
+
+    return {
+        "sent": response.status_code == 200,
+        "status_code": response.status_code,
+        "response": response.text
+    }
+
+
+async def maybe_send_alert(engine):
+    if not should_alert(engine):
+        return {
+            "alert": False,
+            "reason": "no_trigger"
+        }
+
+    now = time.time()
+
+    if now - ALERT_CACHE["last_alert_ts"] < ALERT_COOLDOWN_SECONDS:
+        return {
+            "alert": False,
+            "reason": "cooldown_active"
+        }
+
+    message = build_alert_message(engine)
+    result = await send_telegram(message)
+
+    ALERT_CACHE["last_alert_ts"] = now
+    ALERT_CACHE["last_message"] = message
+
+    return {
+        "alert": True,
+        "telegram": result,
+        "message": message
+    }
+
 
 @app.get("/health")
 async def health():
     return {
         "status": "ok",
-        "timestamp": datetime.now(timezone.utc).isoformat()
+        "timestamp": now_iso()
     }
 
 
@@ -26,6 +139,41 @@ async def get_exit_snapshot():
 async def get_exit_engine():
     snapshot = await build_exit_snapshot()
     return build_exit_engine(snapshot)
+
+
+@app.get("/market/scan")
+async def scan_market():
+    snapshot = await build_exit_snapshot()
+    engine = build_exit_engine(snapshot)
+    alert_result = await maybe_send_alert(engine)
+
+    return {
+        "timestamp": now_iso(),
+        "scan_status": "ok",
+        "alert_result": alert_result,
+        "engine": engine
+    }
+
+
+@app.get("/alerts/status")
+async def alerts_status():
+    return {
+        "telegram_enabled": alert_enabled(),
+        "alert_cooldown_seconds": ALERT_COOLDOWN_SECONDS,
+        "last_alert_ts": ALERT_CACHE["last_alert_ts"],
+        "last_message": ALERT_CACHE["last_message"]
+    }
+
+
+@app.get("/alerts/test")
+async def alerts_test():
+    message = f"✅ EXIT PLAN v10.1 test alert\nTime: {now_iso()}"
+    result = await send_telegram(message)
+
+    return {
+        "test": "telegram",
+        "result": result
+    }
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -55,7 +203,6 @@ async def dashboard():
             border: 1px solid #1f2937;
             border-radius: 12px;
             padding: 16px;
-            box-shadow: 0 0 10px rgba(0,0,0,0.3);
         }
         .good { color: #22c55e; }
         .warn { color: #facc15; }
@@ -75,14 +222,16 @@ async def dashboard():
             padding: 10px 14px;
             border-radius: 8px;
             cursor: pointer;
+            margin-right: 8px;
             margin-bottom: 16px;
         }
-        button:hover { background: #1d4ed8; }
     </style>
 </head>
 <body>
     <h1>EXIT PLAN v10.1 Dashboard</h1>
+
     <button onclick="loadData()">Refresh</button>
+    <button onclick="scanMarket()">Run Scan</button>
 
     <div class="grid">
         <div class="card">
@@ -99,10 +248,11 @@ async def dashboard():
         </div>
 
         <div class="card">
-            <h2>Guardrails</h2>
-            <p>XRP sell allowed: <span class="bad">false</span></p>
-            <p>Moonbags sell allowed: <span class="bad">false</span></p>
-            <p>Single indicator exits: <span class="bad">false</span></p>
+            <h2>Automation</h2>
+            <p>Scan endpoint: <code>/market/scan</code></p>
+            <p>Alert status: <code>/alerts/status</code></p>
+            <p>Telegram test: <code>/alerts/test</code></p>
+            <p id="scan_result" class="muted">No scan yet.</p>
         </div>
     </div>
 
@@ -165,6 +315,14 @@ async function loadData() {
 
     document.getElementById('raw').innerText =
         JSON.stringify(data, null, 2);
+}
+
+async function scanMarket() {
+    const res = await fetch('/market/scan');
+    const data = await res.json();
+    document.getElementById('scan_result').innerText =
+        JSON.stringify(data.alert_result, null, 2);
+    loadData();
 }
 
 loadData();
