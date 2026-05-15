@@ -3,7 +3,16 @@ import time
 import httpx
 from datetime import datetime, timezone
 
-CACHE = {"snapshot": None, "timestamp": 0}
+CACHE = {
+    "snapshot": {
+        "timestamp": "bootstrap",
+        "status": "bootstrap_cache",
+        "coins": {},
+        "btc": {}
+    },
+    "timestamp": 0
+}
+
 CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "7200"))
 
 COINS = {
@@ -19,19 +28,25 @@ def now_iso():
 
 
 def cache_valid():
-    return CACHE["snapshot"] is not None and time.time() - CACHE["timestamp"] < CACHE_TTL_SECONDS
+
+    return (
+        CACHE["snapshot"] is not None
+        and time.time() - CACHE["timestamp"] < CACHE_TTL_SECONDS
+    )
 
 
 async def get_json(url, params=None):
 
     try:
 
-        async with httpx.AsyncClient(timeout=25) as client:
+        async with httpx.AsyncClient(timeout=20) as client:
 
             response = await client.get(url, params=params)
 
             if response.status_code == 429:
+
                 print(f"RATE LIMIT HIT: {url}")
+
                 return None
 
             response.raise_for_status()
@@ -62,7 +77,7 @@ def classify_trend(change_24h):
 def synthetic_rsi(change_24h):
 
     if change_24h is None:
-        return None
+        return 50
 
     base = 50 + (change_24h * 3)
 
@@ -72,7 +87,7 @@ def synthetic_rsi(change_24h):
 def synthetic_atr(price, change_24h):
 
     if price is None or change_24h is None:
-        return None
+        return 0
 
     volatility_factor = abs(change_24h) / 100
 
@@ -133,7 +148,10 @@ async def get_fear_greed():
     )
 
     if not data:
-        return None
+        return {
+            "value": None,
+            "classification": "unknown"
+        }
 
     item = data.get("data", [{}])[0]
 
@@ -153,40 +171,29 @@ async def build_exit_snapshot():
     if cache_valid():
 
         cached = CACHE["snapshot"].copy()
+
         cached["cache_mode"] = "fresh_cache"
 
         return cached
 
     prices = await get_prices()
+
     btc_dominance = await get_btc_dominance()
+
     fear_greed = await get_fear_greed()
 
-    if not prices and CACHE["snapshot"]:
+    if not prices:
+
+        print("COINGECKO FAILED -> USING FALLBACK CACHE")
 
         cached = CACHE["snapshot"].copy()
 
         cached["timestamp"] = now_iso()
         cached["status"] = "degraded"
-        cached["cache_mode"] = "fallback_active"
-        cached["api_error"] = "rate_limited_using_cached_data"
+        cached["cache_mode"] = "fallback_cache_active"
+        cached["api_error"] = "coingecko_unavailable"
 
         return cached
-
-    if not prices:
-
-        return {
-            "timestamp": now_iso(),
-            "status": "degraded",
-            "source": "exit-data-pipeline",
-            "cache_mode": "no_cache_available",
-            "api_error": "market_data_unavailable",
-            "coins": {},
-            "btc": {
-                "dominance": btc_dominance,
-                "fear_greed": fear_greed
-            },
-            "missing_data": ["live_market_data"]
-        }
 
     coins = {}
 
@@ -194,10 +201,11 @@ async def build_exit_snapshot():
 
         base = prices.get(coin_id, {})
 
-        price = base.get("usd")
-        change_24h = base.get("usd_24h_change")
+        price = base.get("usd", 0)
+        change_24h = base.get("usd_24h_change", 0)
 
         rsi = synthetic_rsi(change_24h)
+
         atr = synthetic_atr(price, change_24h)
 
         volatility = classify_volatility(price, atr)
@@ -212,13 +220,13 @@ async def build_exit_snapshot():
         }
 
     altseason_index = None
-    stablecoin_regime = None
+    stablecoin_regime = "🟡 neutral"
 
     if btc_dominance is not None:
 
         altseason_index = round(max(0, 100 - btc_dominance), 2)
 
-    if fear_greed and fear_greed.get("value") is not None:
+    if fear_greed.get("value") is not None:
 
         fg = fear_greed["value"]
 
@@ -228,9 +236,6 @@ async def build_exit_snapshot():
         elif fg >= 75:
             stablecoin_regime = "🔴 euphoric_risk"
 
-        else:
-            stablecoin_regime = "🟡 neutral"
-
     snapshot = {
         "timestamp": now_iso(),
         "status": "ok",
@@ -238,7 +243,6 @@ async def build_exit_snapshot():
         "cache_mode": "live",
         "cache_ttl_seconds": CACHE_TTL_SECONDS,
         "coins": coins,
-        "raw_prices": prices,
         "btc": {
             "dominance": btc_dominance,
             "fear_greed": fear_greed,
@@ -259,6 +263,7 @@ async def build_exit_snapshot():
     }
 
     CACHE["snapshot"] = snapshot
+
     CACHE["timestamp"] = time.time()
 
     return snapshot
