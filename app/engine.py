@@ -131,6 +131,56 @@ def trigger_matrix(symbol, data, macro_score):
     }
 
 
+def build_allocation_plan(signals, global_action, exit_zone_score):
+    stablecoin_target_pct = 0
+    xrp_allocation_action = "HOLD_10_YEAR_CORE"
+    ondo_allocation_action = "MAINTAIN_CORE_RWA_POSITION"
+    dca_out_ladder = []
+
+    if global_action == "RISK_OFF":
+        stablecoin_target_pct = 70
+    elif global_action == "PARTIAL_EXIT_ALLOWED":
+        stablecoin_target_pct = 35
+    elif exit_zone_score >= 25:
+        stablecoin_target_pct = 15
+    else:
+        stablecoin_target_pct = 0
+
+    for symbol, signal in signals.items():
+        if symbol == "XRP":
+            continue
+
+        sell_pct = signal.get("sell_pct", 0)
+        sell_qty = signal.get("sell_qty", 0)
+
+        if sell_pct > 0 and sell_qty > 0:
+            dca_out_ladder.append({
+                "symbol": symbol,
+                "sell_pct": sell_pct,
+                "sell_qty": sell_qty,
+                "execution": "split_into_3_to_5_limit_orders",
+                "destination": "stablecoin_bucket",
+                "moonbag_protected": True
+            })
+
+    return {
+        "stablecoin_allocation": {
+            "target_pct_of_realized_sales": stablecoin_target_pct,
+            "status": "ACCUMULATE_STABLES" if stablecoin_target_pct > 0 else "NO_NEW_STABLECOIN_ACTION",
+            "rule": "only_from_confirmed_sell_signals"
+        },
+        "xrp_allocation": {
+            "action": xrp_allocation_action,
+            "sell_allowed": False
+        },
+        "ondo_allocation": {
+            "action": ondo_allocation_action,
+            "priority": "core_position_above_AERO_CFG"
+        },
+        "dca_out_ladder": dca_out_ladder
+    }
+
+
 def build_exit_engine(snapshot):
     coins = snapshot.get("coins", {})
     btc = snapshot.get("btc", {})
@@ -217,8 +267,10 @@ def build_exit_engine(snapshot):
     else:
         global_action = "NO_FULL_EXIT"
 
+    allocation_plan = build_allocation_plan(signals, global_action, total_score)
+
     return {
-        "engine_version": "1.0-phase-10-compatible",
+        "engine_version": "1.1-phase-11-allocation-engine",
         "engine_status": "active",
         "global_action": global_action,
         "exit_zone_score": total_score,
@@ -240,6 +292,7 @@ def build_exit_engine(snapshot):
             "moonbags_protected": True,
             "liquidity_respect_required": True
         },
+        "allocation_plan": allocation_plan,
         "signals": signals,
         "missing_engine_data": snapshot.get("missing_data", [])
     }
