@@ -13,7 +13,7 @@ COINS = {
     "CFG": "centrifuge"
 }
 
-BINANCE_SYMBOLS = {
+BYBIT_SYMBOLS = {
     "XRP": "XRPUSDT",
     "ONDO": "ONDOUSDT",
     "AERO": "AEROUSDT",
@@ -30,11 +30,8 @@ def cache_valid():
 
 
 async def get_json(url, params=None):
-
     try:
-
         async with httpx.AsyncClient(timeout=25) as client:
-
             response = await client.get(url, params=params)
 
             if response.status_code == 429:
@@ -42,18 +39,14 @@ async def get_json(url, params=None):
                 return None
 
             response.raise_for_status()
-
             return response.json()
 
     except Exception as e:
-
         print(f"HTTP ERROR: {url} -> {e}")
-
         return None
 
 
 def calculate_rsi(closes, period=14):
-
     if len(closes) < period + 1:
         return None
 
@@ -61,9 +54,7 @@ def calculate_rsi(closes, period=14):
     losses = []
 
     for i in range(1, len(closes)):
-
         diff = closes[i] - closes[i - 1]
-
         gains.append(max(diff, 0))
         losses.append(abs(min(diff, 0)))
 
@@ -74,19 +65,16 @@ def calculate_rsi(closes, period=14):
         return 100.0
 
     rs = avg_gain / avg_loss
-
     return round(100 - (100 / (1 + rs)), 2)
 
 
 def calculate_atr(klines, period=14):
-
     if len(klines) < period + 1:
         return None
 
     trs = []
 
     for i in range(1, len(klines)):
-
         high = float(klines[i][2])
         low = float(klines[i][3])
         prev_close = float(klines[i - 1][4])
@@ -103,7 +91,6 @@ def calculate_atr(klines, period=14):
 
 
 def classify_volatility(price, atr):
-
     if price is None or atr is None or price == 0:
         return "⚪ unavailable"
 
@@ -111,10 +98,8 @@ def classify_volatility(price, atr):
 
     if atr_pct >= 10:
         return "🔴 high"
-
     if atr_pct >= 5:
         return "🟠 elevated"
-
     if atr_pct >= 2:
         return "🟡 medium"
 
@@ -122,21 +107,16 @@ def classify_volatility(price, atr):
 
 
 def classify_trend(change_24h):
-
     if change_24h is None:
         return "⚪ unknown"
-
     if change_24h >= 3:
         return "🟢 strengthening"
-
     if change_24h <= -3:
         return "🟠 weakening"
-
     return "🟡 sideways"
 
 
 async def get_prices():
-
     return await get_json(
         "https://api.coingecko.com/api/v3/simple/price",
         {
@@ -149,47 +129,41 @@ async def get_prices():
     )
 
 
-async def get_binance_klines(symbol):
-
+async def get_bybit_klines(symbol):
     try:
-
         data = await get_json(
-            "https://api.binance.com/api/v3/klines",
+            "https://api.bybit.com/v5/market/kline",
             {
+                "category": "linear",
                 "symbol": symbol,
-                "interval": "1d",
+                "interval": "D",
                 "limit": 30
             }
         )
 
         if not data:
-
-            print(f"BINANCE ERROR: no data for {symbol}")
-
+            print(f"BYBIT ERROR: no data for {symbol}")
             return None
 
-        if isinstance(data, dict) and data.get("code"):
+        result = data.get("result", {})
+        klines = result.get("list", [])
 
-            print(f"BINANCE API ERROR {symbol}: {data}")
-
+        if not klines:
+            print(f"BYBIT EMPTY: {symbol}")
             return None
 
-        print(f"BINANCE SUCCESS: {symbol}")
+        print(f"BYBIT SUCCESS: {symbol}")
 
-        return data
+        # Bybit geeft nieuwste candle eerst; omkeren naar oud → nieuw
+        return list(reversed(klines))
 
     except Exception as e:
-
-        print(f"BINANCE EXCEPTION {symbol}: {e}")
-
+        print(f"BYBIT EXCEPTION {symbol}: {e}")
         return None
 
 
 async def get_btc_dominance():
-
-    data = await get_json(
-        "https://api.coingecko.com/api/v3/global"
-    )
+    data = await get_json("https://api.coingecko.com/api/v3/global")
 
     if not data:
         return None
@@ -198,10 +172,7 @@ async def get_btc_dominance():
 
 
 async def get_fear_greed():
-
-    data = await get_json(
-        "https://api.alternative.me/fng/"
-    )
+    data = await get_json("https://api.alternative.me/fng/")
 
     if not data:
         return None
@@ -220,12 +191,9 @@ async def get_fear_greed():
 
 
 async def build_exit_snapshot():
-
     if cache_valid():
-
         cached = CACHE["snapshot"].copy()
         cached["cache_mode"] = "fresh_cache"
-
         return cached
 
     prices = await get_prices()
@@ -233,18 +201,14 @@ async def build_exit_snapshot():
     fear_greed = await get_fear_greed()
 
     if not prices and CACHE["snapshot"]:
-
         cached = CACHE["snapshot"].copy()
-
         cached["timestamp"] = now_iso()
         cached["status"] = "degraded"
         cached["cache_mode"] = "fallback_active"
         cached["api_error"] = "rate_limited_using_cached_data"
-
         return cached
 
     if not prices:
-
         return {
             "timestamp": now_iso(),
             "status": "degraded",
@@ -262,7 +226,6 @@ async def build_exit_snapshot():
     coins = {}
 
     for symbol, coin_id in COINS.items():
-
         base = prices.get(coin_id, {})
 
         price = base.get("usd")
@@ -273,28 +236,21 @@ async def build_exit_snapshot():
         volatility = "⚪ unavailable"
         indicator_method = "unavailable"
 
-        binance_symbol = BINANCE_SYMBOLS.get(symbol)
+        bybit_symbol = BYBIT_SYMBOLS.get(symbol)
 
-        if binance_symbol:
-
-            klines = await get_binance_klines(binance_symbol)
+        if bybit_symbol:
+            klines = await get_bybit_klines(bybit_symbol)
 
             if klines:
-
                 try:
-
                     closes = [float(k[4]) for k in klines]
 
                     rsi = calculate_rsi(closes)
-
                     atr = calculate_atr(klines)
-
                     volatility = classify_volatility(price, atr)
-
-                    indicator_method = "binance_1d_klines"
+                    indicator_method = "bybit_1d_klines"
 
                 except Exception as e:
-
                     print(f"INDICATOR ERROR {symbol}: {e}")
 
         coins[symbol] = {
@@ -310,19 +266,15 @@ async def build_exit_snapshot():
     stablecoin_regime = None
 
     if btc_dominance is not None:
-
         altseason_index = round(max(0, 100 - btc_dominance), 2)
 
     if fear_greed and fear_greed.get("value") is not None:
-
         fg = fear_greed["value"]
 
         if fg <= 25:
             stablecoin_regime = "🟢 defensive_rotation"
-
         elif fg >= 75:
             stablecoin_regime = "🔴 euphoric_risk"
-
         else:
             stablecoin_regime = "🟡 neutral"
 
