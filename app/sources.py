@@ -10,10 +10,7 @@ from .indicators import (
     classify_trend_from_closes
 )
 
-CACHE = {
-    "snapshot": None,
-    "timestamp": 0
-}
+CACHE = {"snapshot": None, "timestamp": 0}
 
 COINS = {
     "XRP": "ripple",
@@ -32,6 +29,20 @@ def now_iso():
 
 def cache_valid():
     return CACHE["snapshot"] is not None and time.time() - CACHE["timestamp"] < CACHE_TTL_SECONDS
+
+
+def classify_trend_from_change(change_24h):
+    if change_24h is None:
+        return "⚪ unknown"
+    if change_24h >= 8:
+        return "🟢 strong_uptrend"
+    if change_24h >= 2:
+        return "🟢 uptrend"
+    if change_24h <= -8:
+        return "🔴 breakdown"
+    if change_24h <= -2:
+        return "🟠 weakening"
+    return "🟡 sideways"
 
 
 async def get_json(url, params=None):
@@ -104,20 +115,6 @@ async def get_market_chart(coin_id, current_price):
     }
 
 
-def classify_trend_from_change(change_24h):
-    if change_24h is None:
-        return "⚪ unknown"
-    if change_24h >= 8:
-        return "🟢 strong_uptrend"
-    if change_24h >= 2:
-        return "🟢 uptrend"
-    if change_24h <= -8:
-        return "🔴 breakdown"
-    if change_24h <= -2:
-        return "🟠 weakening"
-    return "🟡 sideways"
-
-
 async def get_btc_dominance():
     data = await get_json("https://api.coingecko.com/api/v3/global")
     if not data:
@@ -184,7 +181,6 @@ async def build_exit_snapshot():
         change = base.get("usd_24h_change")
 
         indicators = await get_market_chart(coin_id, price)
-
         trend = indicators.get("trend") or classify_trend_from_change(change)
 
         coins[symbol] = {
@@ -194,12 +190,20 @@ async def build_exit_snapshot():
             "trend_fallback": "24h_change_proxy" if indicators.get("trend") is None else "market_chart_ma"
         }
 
-    missing_data = [
-        "cbbi",
-        "pi_cycle",
-        "funding",
-        "open_interest"
-    ]
+    altseason_index = None
+    stablecoin_regime = None
+
+    if btc_dominance is not None:
+        altseason_index = round(max(0, 100 - btc_dominance), 2)
+
+    if fear_greed and fear_greed.get("value") is not None:
+        fg = fear_greed["value"]
+        if fg <= 25:
+            stablecoin_regime = "🟢 defensive_rotation"
+        elif fg >= 75:
+            stablecoin_regime = "🔴 euphoric_risk"
+        else:
+            stablecoin_regime = "🟡 neutral"
 
     snapshot = {
         "timestamp": now_iso(),
@@ -214,13 +218,20 @@ async def build_exit_snapshot():
         "btc": {
             "dominance": btc_dominance,
             "fear_greed": fear_greed,
+            "altseason_index": altseason_index,
+            "stablecoin_regime": stablecoin_regime,
             "cbbi": None,
             "pi_cycle": {
                 "status": "unknown",
                 "distance_pct": None
             }
         },
-        "missing_data": missing_data
+        "missing_data": [
+            "cbbi",
+            "pi_cycle",
+            "funding_live",
+            "open_interest_live"
+        ]
     }
 
     CACHE["snapshot"] = snapshot
