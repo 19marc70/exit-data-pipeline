@@ -30,6 +30,13 @@ DERIVATIVE_SYMBOLS = {
     "CFG": "CFGUSDT"
 }
 
+HYPERLIQUID_SYMBOLS = {
+    "XRP": "XRP",
+    "ONDO": "ONDO",
+    "AERO": "AERO",
+    "CFG": "CFG"
+}
+
 
 def now_iso():
     return datetime.now(timezone.utc).isoformat()
@@ -60,6 +67,27 @@ async def get_json(url, params=None, headers=None):
 
     except Exception as e:
         print(f"HTTP ERROR: {url} -> {e}")
+        return None
+
+
+async def post_json(url, payload=None, headers=None):
+    try:
+        async with httpx.AsyncClient(timeout=25) as client:
+            response = await client.post(url, json=payload, headers=headers)
+
+            if response.status_code == 429:
+                print(f"RATE LIMIT HIT: {url}")
+                return None
+
+            if response.status_code in [401, 403]:
+                print(f"AUTH/BLOCK ERROR {response.status_code}: {url}")
+                return None
+
+            response.raise_for_status()
+            return response.json()
+
+    except Exception as e:
+        print(f"HTTP POST ERROR: {url} -> {e}")
         return None
 
 
@@ -121,9 +149,7 @@ async def get_prices():
 
 
 async def get_btc_dominance():
-    data = await get_json(
-        "https://api.coingecko.com/api/v3/global"
-    )
+    data = await get_json("https://api.coingecko.com/api/v3/global")
 
     if not data:
         return None
@@ -132,9 +158,7 @@ async def get_btc_dominance():
 
 
 async def get_fear_greed():
-    data = await get_json(
-        "https://api.alternative.me/fng/"
-    )
+    data = await get_json("https://api.alternative.me/fng/")
 
     if not data:
         return {
@@ -160,18 +184,15 @@ async def get_coinglass_funding(symbol):
         return {
             "available": False,
             "reason": "missing_api_key",
-            "value": None
+            "value": None,
+            "source": "coinglass"
         }
 
-    headers = {
-        "CG-API-KEY": COINGLASS_API_KEY
-    }
+    headers = {"CG-API-KEY": COINGLASS_API_KEY}
 
     data = await get_json(
         "https://open-api-v4.coinglass.com/api/futures/funding-rate/oi-weight-history",
-        {
-            "symbol": symbol
-        },
+        {"symbol": symbol},
         headers=headers
     )
 
@@ -179,7 +200,8 @@ async def get_coinglass_funding(symbol):
         return {
             "available": False,
             "reason": "api_unavailable",
-            "value": None
+            "value": None,
+            "source": "coinglass"
         }
 
     try:
@@ -192,7 +214,8 @@ async def get_coinglass_funding(symbol):
             return {
                 "available": False,
                 "reason": "empty_response",
-                "value": None
+                "value": None,
+                "source": "coinglass"
             }
 
         last = rows[-1]
@@ -202,15 +225,7 @@ async def get_coinglass_funding(symbol):
             funding = float(last[-1])
 
         elif isinstance(last, dict):
-            possible_keys = [
-                "close",
-                "fundingRate",
-                "funding_rate",
-                "rate",
-                "value"
-            ]
-
-            for key in possible_keys:
+            for key in ["close", "fundingRate", "funding_rate", "rate", "value"]:
                 if last.get(key) is not None:
                     funding = float(last.get(key))
                     break
@@ -218,14 +233,16 @@ async def get_coinglass_funding(symbol):
         return {
             "available": funding is not None,
             "reason": "ok" if funding is not None else "funding_parse_failed",
-            "value": funding
+            "value": funding,
+            "source": "coinglass"
         }
 
     except Exception as e:
         return {
             "available": False,
             "reason": f"parse_error:{str(e)}",
-            "value": None
+            "value": None,
+            "source": "coinglass"
         }
 
 
@@ -235,12 +252,11 @@ async def get_coinglass_open_interest(symbol):
             "available": False,
             "reason": "missing_api_key",
             "value": None,
-            "change_24h_pct": None
+            "change_24h_pct": None,
+            "source": "coinglass"
         }
 
-    headers = {
-        "CG-API-KEY": COINGLASS_API_KEY
-    }
+    headers = {"CG-API-KEY": COINGLASS_API_KEY}
 
     data = await get_json(
         "https://open-api-v4.coinglass.com/api/futures/openInterest/ohlc-history",
@@ -257,7 +273,8 @@ async def get_coinglass_open_interest(symbol):
             "available": False,
             "reason": "api_unavailable",
             "value": None,
-            "change_24h_pct": None
+            "change_24h_pct": None,
+            "source": "coinglass"
         }
 
     try:
@@ -271,40 +288,31 @@ async def get_coinglass_open_interest(symbol):
                 "available": False,
                 "reason": "not_enough_history",
                 "value": None,
-                "change_24h_pct": None
+                "change_24h_pct": None,
+                "source": "coinglass"
             }
-
-        last = rows[-1]
-        previous = rows[-2]
 
         def extract_value(row):
             if isinstance(row, list):
                 return float(row[-1])
 
             if isinstance(row, dict):
-                possible_keys = [
-                    "close",
-                    "openInterest",
-                    "open_interest",
-                    "oi",
-                    "value"
-                ]
-
-                for key in possible_keys:
+                for key in ["close", "openInterest", "open_interest", "oi", "value"]:
                     if row.get(key) is not None:
                         return float(row.get(key))
 
             return None
 
-        current_value = extract_value(last)
-        previous_value = extract_value(previous)
+        current_value = extract_value(rows[-1])
+        previous_value = extract_value(rows[-2])
 
         if current_value is None or previous_value in [None, 0]:
             return {
                 "available": False,
                 "reason": "oi_parse_failed",
                 "value": None,
-                "change_24h_pct": None
+                "change_24h_pct": None,
+                "source": "coinglass"
             }
 
         change_pct = ((current_value - previous_value) / previous_value) * 100
@@ -313,7 +321,8 @@ async def get_coinglass_open_interest(symbol):
             "available": True,
             "reason": "ok",
             "value": current_value,
-            "change_24h_pct": round(change_pct, 2)
+            "change_24h_pct": round(change_pct, 2),
+            "source": "coinglass"
         }
 
     except Exception as e:
@@ -321,25 +330,130 @@ async def get_coinglass_open_interest(symbol):
             "available": False,
             "reason": f"parse_error:{str(e)}",
             "value": None,
-            "change_24h_pct": None
+            "change_24h_pct": None,
+            "source": "coinglass"
         }
+
+
+async def get_hyperliquid_contexts():
+    data = await post_json(
+        "https://api.hyperliquid.xyz/info",
+        {"type": "metaAndAssetCtxs"},
+        {"Content-Type": "application/json"}
+    )
+
+    if not data:
+        return {}
+
+    try:
+        meta = data[0]
+        asset_contexts = data[1]
+
+        universe = meta.get("universe", [])
+
+        result = {}
+
+        for index, asset in enumerate(universe):
+            name = asset.get("name")
+            ctx = asset_contexts[index] if index < len(asset_contexts) else {}
+
+            if name:
+                result[name.upper()] = ctx
+
+        return result
+
+    except Exception as e:
+        print(f"HYPERLIQUID PARSE ERROR: {e}")
+        return {}
+
+
+def get_hyperliquid_derivatives(symbol, contexts):
+    hl_symbol = HYPERLIQUID_SYMBOLS.get(symbol)
+
+    if not hl_symbol:
+        return {
+            "funding": {
+                "available": False,
+                "reason": "missing_hyperliquid_symbol",
+                "value": None,
+                "source": "hyperliquid"
+            },
+            "open_interest": {
+                "available": False,
+                "reason": "missing_hyperliquid_symbol",
+                "value": None,
+                "change_24h_pct": None,
+                "source": "hyperliquid"
+            }
+        }
+
+    ctx = contexts.get(hl_symbol.upper())
+
+    if not ctx:
+        return {
+            "funding": {
+                "available": False,
+                "reason": "hyperliquid_symbol_not_listed",
+                "value": None,
+                "source": "hyperliquid"
+            },
+            "open_interest": {
+                "available": False,
+                "reason": "hyperliquid_symbol_not_listed",
+                "value": None,
+                "change_24h_pct": None,
+                "source": "hyperliquid"
+            }
+        }
+
+    funding_value = None
+    oi_value = None
+
+    try:
+        if ctx.get("funding") is not None:
+            funding_value = float(ctx.get("funding"))
+    except Exception:
+        funding_value = None
+
+    try:
+        if ctx.get("openInterest") is not None:
+            oi_value = float(ctx.get("openInterest"))
+    except Exception:
+        oi_value = None
+
+    return {
+        "funding": {
+            "available": funding_value is not None,
+            "reason": "ok" if funding_value is not None else "funding_missing",
+            "value": funding_value,
+            "source": "hyperliquid"
+        },
+        "open_interest": {
+            "available": oi_value is not None,
+            "reason": "ok" if oi_value is not None else "oi_missing",
+            "value": oi_value,
+            "change_24h_pct": None,
+            "source": "hyperliquid"
+        }
+    }
 
 
 def classify_derivatives(funding, open_interest):
     funding_value = funding.get("value") if isinstance(funding, dict) else None
     oi_change = open_interest.get("change_24h_pct") if isinstance(open_interest, dict) else None
+    oi_available = open_interest.get("available") if isinstance(open_interest, dict) else False
 
     leverage_risk = "⚪ unknown"
     reasons = []
 
     if funding_value is not None:
-        if funding_value >= 0.08:
+        if funding_value >= 0.0008:
             leverage_risk = "🔴 overheated_longs"
             reasons.append("funding_extreme_positive")
-        elif funding_value >= 0.03:
+        elif funding_value >= 0.0003:
             leverage_risk = "🟠 crowded_longs"
             reasons.append("funding_positive")
-        elif funding_value <= -0.03:
+        elif funding_value <= -0.0003:
             leverage_risk = "🟢 short_pressure"
             reasons.append("funding_negative")
         else:
@@ -360,6 +474,10 @@ def classify_derivatives(funding, open_interest):
 
         else:
             reasons.append("oi_stable")
+
+    elif oi_available:
+        reasons.append("oi_available_no_24h_change")
+
     else:
         reasons.append("oi_missing")
 
@@ -378,6 +496,7 @@ async def build_exit_snapshot():
     prices = await get_prices()
     btc_dominance = await get_btc_dominance()
     fear_greed = await get_fear_greed()
+    hyperliquid_contexts = await get_hyperliquid_contexts()
 
     if not prices:
         cached = CACHE["snapshot"].copy()
@@ -403,6 +522,20 @@ async def build_exit_snapshot():
 
         funding = await get_coinglass_funding(derivative_symbol)
         open_interest = await get_coinglass_open_interest(derivative_symbol)
+
+        derivative_source_priority = "coinglass"
+
+        if not funding.get("available") or not open_interest.get("available"):
+            fallback = get_hyperliquid_derivatives(symbol, hyperliquid_contexts)
+
+            if not funding.get("available") and fallback["funding"].get("available"):
+                funding = fallback["funding"]
+                derivative_source_priority = "hyperliquid_fallback"
+
+            if not open_interest.get("available") and fallback["open_interest"].get("available"):
+                open_interest = fallback["open_interest"]
+                derivative_source_priority = "hyperliquid_fallback"
+
         derivatives_state = classify_derivatives(funding, open_interest)
 
         coins[symbol] = {
@@ -413,6 +546,7 @@ async def build_exit_snapshot():
             "trend": classify_trend(change_24h),
             "indicator_method": "synthetic_proxy_model",
             "derivatives": {
+                "source_priority": derivative_source_priority,
                 "funding": funding,
                 "open_interest": open_interest,
                 "state": derivatives_state
@@ -440,6 +574,7 @@ async def build_exit_snapshot():
         "cache_mode": "live",
         "cache_ttl_seconds": CACHE_TTL_SECONDS,
         "coinglass_enabled": bool(COINGLASS_API_KEY),
+        "hyperliquid_fallback_enabled": True,
         "coins": coins,
         "btc": {
             "dominance": btc_dominance,
