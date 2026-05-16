@@ -76,6 +76,7 @@ def classify_trend(change_24h):
 def synthetic_rsi(change_24h):
     if change_24h is None:
         return 50
+
     base = 50 + (change_24h * 3)
     return round(max(5, min(95, base)), 2)
 
@@ -83,8 +84,10 @@ def synthetic_rsi(change_24h):
 def synthetic_atr(price, change_24h):
     if price is None or change_24h is None:
         return 0
+
     volatility_factor = abs(change_24h) / 100
     atr = price * volatility_factor
+
     return round(atr, 6)
 
 
@@ -156,11 +159,13 @@ async def get_coinglass_funding(symbol):
     if not COINGLASS_API_KEY:
         return {
             "available": False,
-            "reason": "missing_coinglass_api_key",
+            "reason": "missing_api_key",
             "value": None
         }
 
-    headers = {"CG-API-KEY": COINGLASS_API_KEY}
+    headers = {
+        "CG-API-KEY": COINGLASS_API_KEY
+    }
 
     data = await get_json(
         "https://open-api-v4.coinglass.com/api/futures/funding-rate/oi-weight-history",
@@ -173,38 +178,53 @@ async def get_coinglass_funding(symbol):
     if not data:
         return {
             "available": False,
-            "reason": "coinglass_funding_unavailable",
+            "reason": "api_unavailable",
             "value": None
         }
 
     try:
-        rows = data.get("data", [])
+        rows = data.get("data")
+
         if isinstance(rows, dict):
             rows = rows.get("list", [])
 
-        last = rows[-1] if rows else None
+        if not rows:
+            return {
+                "available": False,
+                "reason": "empty_response",
+                "value": None
+            }
 
-        value = None
-        if isinstance(last, dict):
-            value = (
-                last.get("close")
-                or last.get("fundingRate")
-                or last.get("funding_rate")
-                or last.get("value")
-            )
-        elif isinstance(last, list) and len(last) > 1:
-            value = last[-1]
+        last = rows[-1]
+        funding = None
+
+        if isinstance(last, list):
+            funding = float(last[-1])
+
+        elif isinstance(last, dict):
+            possible_keys = [
+                "close",
+                "fundingRate",
+                "funding_rate",
+                "rate",
+                "value"
+            ]
+
+            for key in possible_keys:
+                if last.get(key) is not None:
+                    funding = float(last.get(key))
+                    break
 
         return {
-            "available": value is not None,
-            "reason": "ok" if value is not None else "funding_parse_failed",
-            "value": float(value) if value is not None else None
+            "available": funding is not None,
+            "reason": "ok" if funding is not None else "funding_parse_failed",
+            "value": funding
         }
 
     except Exception as e:
         return {
             "available": False,
-            "reason": f"funding_parse_error:{e}",
+            "reason": f"parse_error:{str(e)}",
             "value": None
         }
 
@@ -213,11 +233,14 @@ async def get_coinglass_open_interest(symbol):
     if not COINGLASS_API_KEY:
         return {
             "available": False,
-            "reason": "missing_coinglass_api_key",
-            "value": None
+            "reason": "missing_api_key",
+            "value": None,
+            "change_24h_pct": None
         }
 
-    headers = {"CG-API-KEY": COINGLASS_API_KEY}
+    headers = {
+        "CG-API-KEY": COINGLASS_API_KEY
+    }
 
     data = await get_json(
         "https://open-api-v4.coinglass.com/api/futures/openInterest/ohlc-history",
@@ -232,54 +255,71 @@ async def get_coinglass_open_interest(symbol):
     if not data:
         return {
             "available": False,
-            "reason": "coinglass_oi_unavailable",
+            "reason": "api_unavailable",
             "value": None,
             "change_24h_pct": None
         }
 
     try:
-        rows = data.get("data", [])
+        rows = data.get("data")
+
         if isinstance(rows, dict):
             rows = rows.get("list", [])
 
-        if not rows:
+        if not rows or len(rows) < 2:
             return {
                 "available": False,
-                "reason": "oi_empty",
+                "reason": "not_enough_history",
                 "value": None,
                 "change_24h_pct": None
             }
 
-        def extract_close(row):
+        last = rows[-1]
+        previous = rows[-2]
+
+        def extract_value(row):
+            if isinstance(row, list):
+                return float(row[-1])
+
             if isinstance(row, dict):
-                return (
-                    row.get("close")
-                    or row.get("openInterest")
-                    or row.get("open_interest")
-                    or row.get("value")
-                )
-            if isinstance(row, list) and len(row) > 1:
-                return row[-1]
+                possible_keys = [
+                    "close",
+                    "openInterest",
+                    "open_interest",
+                    "oi",
+                    "value"
+                ]
+
+                for key in possible_keys:
+                    if row.get(key) is not None:
+                        return float(row.get(key))
+
             return None
 
-        last_value = extract_close(rows[-1])
-        prev_value = extract_close(rows[-2]) if len(rows) >= 2 else None
+        current_value = extract_value(last)
+        previous_value = extract_value(previous)
 
-        change_pct = None
-        if last_value is not None and prev_value not in [None, 0]:
-            change_pct = ((float(last_value) - float(prev_value)) / float(prev_value)) * 100
+        if current_value is None or previous_value in [None, 0]:
+            return {
+                "available": False,
+                "reason": "oi_parse_failed",
+                "value": None,
+                "change_24h_pct": None
+            }
+
+        change_pct = ((current_value - previous_value) / previous_value) * 100
 
         return {
-            "available": last_value is not None,
-            "reason": "ok" if last_value is not None else "oi_parse_failed",
-            "value": float(last_value) if last_value is not None else None,
-            "change_24h_pct": round(change_pct, 2) if change_pct is not None else None
+            "available": True,
+            "reason": "ok",
+            "value": current_value,
+            "change_24h_pct": round(change_pct, 2)
         }
 
     except Exception as e:
         return {
             "available": False,
-            "reason": f"oi_parse_error:{e}",
+            "reason": f"parse_error:{str(e)}",
             "value": None,
             "change_24h_pct": None
         }
@@ -311,10 +351,13 @@ def classify_derivatives(funding, open_interest):
     if oi_change is not None:
         if oi_change >= 15:
             reasons.append("oi_expansion")
+
             if leverage_risk in ["🟠 crowded_longs", "🔴 overheated_longs"]:
                 leverage_risk = "🔴 leverage_overheat"
+
         elif oi_change <= -15:
             reasons.append("oi_flush")
+
         else:
             reasons.append("oi_stable")
     else:
