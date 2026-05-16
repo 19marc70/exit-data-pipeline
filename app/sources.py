@@ -3,14 +3,39 @@ import time
 import httpx
 from datetime import datetime, timezone
 
-CACHE = {"snapshot": {"timestamp": "bootstrap", "status": "bootstrap_cache", "coins": {}, "btc": {}}, "timestamp": 0}
+CACHE = {
+    "snapshot": {
+        "timestamp": "bootstrap",
+        "status": "bootstrap_cache",
+        "coins": {},
+        "btc": {}
+    },
+    "timestamp": 0
+}
 
 CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "7200"))
 COINGLASS_API_KEY = os.getenv("COINGLASS_API_KEY")
 
-COINS = {"XRP": "ripple", "ONDO": "ondo-finance", "AERO": "aerodrome-finance", "CFG": "centrifuge"}
-DERIVATIVE_SYMBOLS = {"XRP": "XRPUSDT", "ONDO": "ONDOUSDT", "AERO": "AEROUSDT", "CFG": "CFGUSDT"}
-HYPERLIQUID_SYMBOLS = {"XRP": "XRP", "ONDO": "ONDO", "AERO": "AERO", "CFG": "CFG"}
+COINS = {
+    "XRP": "ripple",
+    "ONDO": "ondo-finance",
+    "AERO": "aerodrome-finance",
+    "CFG": "centrifuge"
+}
+
+DERIVATIVE_SYMBOLS = {
+    "XRP": "XRPUSDT",
+    "ONDO": "ONDOUSDT",
+    "AERO": "AEROUSDT",
+    "CFG": "CFGUSDT"
+}
+
+HYPERLIQUID_SYMBOLS = {
+    "XRP": "XRP",
+    "ONDO": "ONDO",
+    "AERO": "AERO",
+    "CFG": "CFG"
+}
 
 
 def now_iso():
@@ -25,11 +50,14 @@ async def get_json(url, params=None, headers=None):
     try:
         async with httpx.AsyncClient(timeout=25) as client:
             r = await client.get(url, params=params, headers=headers)
+
             if r.status_code in [401, 403, 429]:
                 print(f"HTTP BLOCK/RATE {r.status_code}: {url}")
                 return None
+
             r.raise_for_status()
             return r.json()
+
     except Exception as e:
         print(f"HTTP ERROR: {url} -> {e}")
         return None
@@ -39,11 +67,14 @@ async def post_json(url, payload=None, headers=None):
     try:
         async with httpx.AsyncClient(timeout=25) as client:
             r = await client.post(url, json=payload, headers=headers)
+
             if r.status_code in [401, 403, 429]:
                 print(f"HTTP POST BLOCK/RATE {r.status_code}: {url}")
                 return None
+
             r.raise_for_status()
             return r.json()
+
     except Exception as e:
         print(f"HTTP POST ERROR: {url} -> {e}")
         return None
@@ -62,25 +93,30 @@ def classify_trend(change_24h):
 def synthetic_rsi(change_24h):
     if change_24h is None:
         return 50
+
     return round(max(5, min(95, 50 + change_24h * 3)), 2)
 
 
 def synthetic_atr(price, change_24h):
     if price is None or change_24h is None:
         return 0
+
     return round(price * abs(change_24h) / 100, 6)
 
 
 def classify_volatility(price, atr):
     if price is None or atr is None or price == 0:
         return "⚪ unavailable"
+
     atr_pct = atr / price * 100
+
     if atr_pct >= 10:
         return "🔴 high"
     if atr_pct >= 5:
         return "🟠 elevated"
     if atr_pct >= 2:
         return "🟡 medium"
+
     return "🟢 low"
 
 
@@ -99,19 +135,31 @@ async def get_prices():
 
 async def get_btc_dominance():
     data = await get_json("https://api.coingecko.com/api/v3/global")
+
     if not data:
         return None
+
     return data.get("data", {}).get("market_cap_percentage", {}).get("btc")
 
 
 async def get_btc_price_history():
     data = await get_json(
         "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart",
-        {"vs_currency": "usd", "days": "420", "interval": "daily"},
+        {
+            "vs_currency": "usd",
+            "days": "420",
+            "interval": "daily"
+        },
     )
+
     if not data:
         return []
-    return [float(x[1]) for x in data.get("prices", []) if isinstance(x, list) and len(x) >= 2]
+
+    return [
+        float(x[1])
+        for x in data.get("prices", [])
+        if isinstance(x, list) and len(x) >= 2
+    ]
 
 
 def calculate_pi_cycle(closes):
@@ -131,13 +179,21 @@ def calculate_pi_cycle(closes):
     distance_pct = ((ma_350x2 - ma_111) / ma_111) * 100
 
     if distance_pct <= 0:
-        status, state, top = "top_risk", "🔴 TOP_RISK", True
+        status = "top_risk"
+        state = "🔴 TOP_RISK"
+        top_risk = True
     elif distance_pct <= 10:
-        status, state, top = "late_cycle", "🟠 LATE_CYCLE", False
+        status = "late_cycle"
+        state = "🟠 LATE_CYCLE"
+        top_risk = False
     elif distance_pct <= 25:
-        status, state, top = "mid_late_cycle", "🟡 MID_LATE_CYCLE", False
+        status = "mid_late_cycle"
+        state = "🟡 MID_LATE_CYCLE"
+        top_risk = False
     else:
-        status, state, top = "early_mid_cycle", "🟢 EARLY_MID_CYCLE", False
+        status = "early_mid_cycle"
+        state = "🟢 EARLY_MID_CYCLE"
+        top_risk = False
 
     return {
         "status": status,
@@ -145,13 +201,15 @@ def calculate_pi_cycle(closes):
         "distance_pct": round(distance_pct, 2),
         "ma_111": round(ma_111, 2),
         "ma_350x2": round(ma_350x2, 2),
-        "top_risk": top,
+        "top_risk": top_risk,
         "method": "pi_cycle_111dma_vs_350dma_x2",
     }
 
 
 async def get_cbbi():
-    data = await get_json("https://colintalkscrypto.com/cbbi/data/latest.json")
+    data = await get_json(
+        "https://colintalkscrypto.com/cbbi/data/latest.json"
+    )
 
     if not data:
         return {
@@ -165,14 +223,23 @@ async def get_cbbi():
     try:
         value = None
 
+        keys = [
+            "CBBI",
+            "cbbi",
+            "value",
+            "confidence",
+            "Confidence",
+            "index"
+        ]
+
         if isinstance(data, dict):
-            for key in ["CBBI", "cbbi", "value", "confidence", "index"]:
+            for key in keys:
                 if data.get(key) is not None:
                     value = float(data.get(key))
                     break
 
-            if value is None and "data" in data and isinstance(data["data"], dict):
-                for key in ["CBBI", "cbbi", "value", "confidence", "index"]:
+            if value is None and isinstance(data.get("data"), dict):
+                for key in keys:
                     if data["data"].get(key) is not None:
                         value = float(data["data"].get(key))
                         break
@@ -263,21 +330,34 @@ def build_cycle_score(pi_cycle, cbbi):
 
 async def get_fear_greed():
     data = await get_json("https://api.alternative.me/fng/")
+
     if not data:
-        return {"value": None, "classification": "unknown"}
+        return {
+            "value": None,
+            "classification": "unknown"
+        }
 
     item = data.get("data", [{}])[0]
+
     try:
         value = int(item.get("value"))
     except Exception:
         value = None
 
-    return {"value": value, "classification": item.get("value_classification")}
+    return {
+        "value": value,
+        "classification": item.get("value_classification")
+    }
 
 
 async def get_coinglass_funding(symbol):
     if not COINGLASS_API_KEY:
-        return {"available": False, "reason": "missing_api_key", "value": None, "source": "coinglass"}
+        return {
+            "available": False,
+            "reason": "missing_api_key",
+            "value": None,
+            "source": "coinglass"
+        }
 
     data = await get_json(
         "https://open-api-v4.coinglass.com/api/futures/funding-rate/oi-weight-history",
@@ -286,65 +366,121 @@ async def get_coinglass_funding(symbol):
     )
 
     if not data:
-        return {"available": False, "reason": "api_unavailable", "value": None, "source": "coinglass"}
+        return {
+            "available": False,
+            "reason": "api_unavailable",
+            "value": None,
+            "source": "coinglass"
+        }
 
     try:
         rows = data.get("data")
+
         if isinstance(rows, dict):
             rows = rows.get("list", [])
+
         if not rows:
-            return {"available": False, "reason": "empty_response", "value": None, "source": "coinglass"}
+            return {
+                "available": False,
+                "reason": "empty_response",
+                "value": None,
+                "source": "coinglass"
+            }
 
         last = rows[-1]
         value = None
 
         if isinstance(last, list):
             value = float(last[-1])
+
         elif isinstance(last, dict):
             for key in ["close", "fundingRate", "funding_rate", "rate", "value"]:
                 if last.get(key) is not None:
                     value = float(last.get(key))
                     break
 
-        return {"available": value is not None, "reason": "ok" if value is not None else "parse_failed", "value": value, "source": "coinglass"}
+        return {
+            "available": value is not None,
+            "reason": "ok" if value is not None else "parse_failed",
+            "value": value,
+            "source": "coinglass"
+        }
+
     except Exception as e:
-        return {"available": False, "reason": f"parse_error:{e}", "value": None, "source": "coinglass"}
+        return {
+            "available": False,
+            "reason": f"parse_error:{e}",
+            "value": None,
+            "source": "coinglass"
+        }
 
 
 async def get_coinglass_open_interest(symbol):
     if not COINGLASS_API_KEY:
-        return {"available": False, "reason": "missing_api_key", "value": None, "change_24h_pct": None, "source": "coinglass"}
+        return {
+            "available": False,
+            "reason": "missing_api_key",
+            "value": None,
+            "change_24h_pct": None,
+            "source": "coinglass"
+        }
 
     data = await get_json(
         "https://open-api-v4.coinglass.com/api/futures/openInterest/ohlc-history",
-        {"symbol": symbol, "interval": "1d", "limit": "2"},
+        {
+            "symbol": symbol,
+            "interval": "1d",
+            "limit": "2"
+        },
         {"CG-API-KEY": COINGLASS_API_KEY},
     )
 
     if not data:
-        return {"available": False, "reason": "api_unavailable", "value": None, "change_24h_pct": None, "source": "coinglass"}
+        return {
+            "available": False,
+            "reason": "api_unavailable",
+            "value": None,
+            "change_24h_pct": None,
+            "source": "coinglass"
+        }
 
     try:
         rows = data.get("data")
+
         if isinstance(rows, dict):
             rows = rows.get("list", [])
+
         if not rows or len(rows) < 2:
-            return {"available": False, "reason": "not_enough_history", "value": None, "change_24h_pct": None, "source": "coinglass"}
+            return {
+                "available": False,
+                "reason": "not_enough_history",
+                "value": None,
+                "change_24h_pct": None,
+                "source": "coinglass"
+            }
 
         def extract(row):
             if isinstance(row, list):
                 return float(row[-1])
+
             if isinstance(row, dict):
                 for key in ["close", "openInterest", "open_interest", "oi", "value"]:
                     if row.get(key) is not None:
                         return float(row.get(key))
+
             return None
 
         current = extract(rows[-1])
         previous = extract(rows[-2])
 
         if current is None or previous in [None, 0]:
-            return {"available": False, "reason": "oi_parse_failed", "value": None, "change_24h_pct": None, "source": "coinglass"}
+            return {
+                "available": False,
+                "reason": "oi_parse_failed",
+                "value": None,
+                "change_24h_pct": None,
+                "source": "coinglass"
+            }
 
         return {
             "available": True,
@@ -353,12 +489,24 @@ async def get_coinglass_open_interest(symbol):
             "change_24h_pct": round(((current - previous) / previous) * 100, 2),
             "source": "coinglass",
         }
+
     except Exception as e:
-        return {"available": False, "reason": f"parse_error:{e}", "value": None, "change_24h_pct": None, "source": "coinglass"}
+        return {
+            "available": False,
+            "reason": f"parse_error:{e}",
+            "value": None,
+            "change_24h_pct": None,
+            "source": "coinglass"
+        }
 
 
 async def get_hyperliquid_contexts():
-    data = await post_json("https://api.hyperliquid.xyz/info", {"type": "metaAndAssetCtxs"}, {"Content-Type": "application/json"})
+    data = await post_json(
+        "https://api.hyperliquid.xyz/info",
+        {"type": "metaAndAssetCtxs"},
+        {"Content-Type": "application/json"}
+    )
+
     if not data:
         return {}
 
@@ -374,6 +522,7 @@ async def get_hyperliquid_contexts():
                 result[name.upper()] = ctxs[i] if i < len(ctxs) else {}
 
         return result
+
     except Exception as e:
         print(f"HYPERLIQUID PARSE ERROR: {e}")
         return {}
@@ -385,8 +534,19 @@ def get_hyperliquid_derivatives(symbol, contexts):
 
     if not ctx:
         return {
-            "funding": {"available": False, "reason": "hyperliquid_symbol_not_listed", "value": None, "source": "hyperliquid"},
-            "open_interest": {"available": False, "reason": "hyperliquid_symbol_not_listed", "value": None, "change_24h_pct": None, "source": "hyperliquid"},
+            "funding": {
+                "available": False,
+                "reason": "hyperliquid_symbol_not_listed",
+                "value": None,
+                "source": "hyperliquid"
+            },
+            "open_interest": {
+                "available": False,
+                "reason": "hyperliquid_symbol_not_listed",
+                "value": None,
+                "change_24h_pct": None,
+                "source": "hyperliquid"
+            },
         }
 
     try:
@@ -400,8 +560,19 @@ def get_hyperliquid_derivatives(symbol, contexts):
         oi = None
 
     return {
-        "funding": {"available": funding is not None, "reason": "ok" if funding is not None else "funding_missing", "value": funding, "source": "hyperliquid"},
-        "open_interest": {"available": oi is not None, "reason": "ok" if oi is not None else "oi_missing", "value": oi, "change_24h_pct": None, "source": "hyperliquid"},
+        "funding": {
+            "available": funding is not None,
+            "reason": "ok" if funding is not None else "funding_missing",
+            "value": funding,
+            "source": "hyperliquid"
+        },
+        "open_interest": {
+            "available": oi is not None,
+            "reason": "ok" if oi is not None else "oi_missing",
+            "value": oi,
+            "change_24h_pct": None,
+            "source": "hyperliquid"
+        },
     }
 
 
@@ -432,18 +603,26 @@ def classify_derivatives(funding, open_interest):
     if oi_change is not None:
         if oi_change >= 15:
             reasons.append("oi_expansion")
+
             if leverage_risk in ["🟠 crowded_longs", "🔴 overheated_longs"]:
                 leverage_risk = "🔴 leverage_overheat"
+
         elif oi_change <= -15:
             reasons.append("oi_flush")
+
         else:
             reasons.append("oi_stable")
+
     elif oi_available:
         reasons.append("oi_available_no_24h_change")
+
     else:
         reasons.append("oi_missing")
 
-    return {"leverage_risk": leverage_risk, "reasons": reasons}
+    return {
+        "leverage_risk": leverage_risk,
+        "reasons": reasons
+    }
 
 
 async def build_exit_snapshot():
@@ -473,6 +652,7 @@ async def build_exit_snapshot():
 
     for symbol, coin_id in COINS.items():
         base = prices.get(coin_id, {})
+
         price = base.get("usd", 0)
         change_24h = base.get("usd_24h_change", 0)
 
@@ -491,11 +671,13 @@ async def build_exit_snapshot():
                 open_interest = fallback["open_interest"]
                 source_priority = "hyperliquid_fallback"
 
+        atr = synthetic_atr(price, change_24h)
+
         coins[symbol] = {
             **base,
             "rsi_14d": synthetic_rsi(change_24h),
-            "atr_14d": synthetic_atr(price, change_24h),
-            "volatility": classify_volatility(price, synthetic_atr(price, change_24h)),
+            "atr_14d": atr,
+            "volatility": classify_volatility(price, atr),
             "trend": classify_trend(change_24h),
             "indicator_method": "synthetic_proxy_model",
             "derivatives": {
@@ -511,6 +693,7 @@ async def build_exit_snapshot():
 
     if fear_greed.get("value") is not None:
         fg = fear_greed["value"]
+
         if fg <= 25:
             stablecoin_regime = "🟢 defensive_rotation"
         elif fg >= 75:
@@ -541,4 +724,5 @@ async def build_exit_snapshot():
 
     CACHE["snapshot"] = snapshot
     CACHE["timestamp"] = time.time()
+
     return snapshot
