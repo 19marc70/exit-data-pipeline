@@ -148,6 +148,15 @@ async def get_prices():
     )
 
 
+async def get_btc_dominance():
+    data = await get_json("https://api.coingecko.com/api/v3/global")
+
+    if not data:
+        return None
+
+    return data.get("data", {}).get("market_cap_percentage", {}).get("btc")
+
+
 async def get_btc_price_history():
     data = await get_json(
         "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart",
@@ -162,7 +171,6 @@ async def get_btc_price_history():
         return []
 
     prices = data.get("prices", [])
-
     closes = []
 
     for item in prices:
@@ -191,20 +199,20 @@ def calculate_pi_cycle(closes):
     distance_pct = ((ma_350x2 - ma_111) / ma_111) * 100
 
     if distance_pct <= 0:
-        cycle_state = "🔴 TOP_RISK"
         status = "top_risk"
+        cycle_state = "🔴 TOP_RISK"
         top_risk = True
     elif distance_pct <= 10:
-        cycle_state = "🟠 LATE_CYCLE"
         status = "late_cycle"
+        cycle_state = "🟠 LATE_CYCLE"
         top_risk = False
     elif distance_pct <= 25:
-        cycle_state = "🟡 MID_LATE_CYCLE"
         status = "mid_late_cycle"
+        cycle_state = "🟡 MID_LATE_CYCLE"
         top_risk = False
     else:
-        cycle_state = "🟢 EARLY_MID_CYCLE"
         status = "early_mid_cycle"
+        cycle_state = "🟢 EARLY_MID_CYCLE"
         top_risk = False
 
     return {
@@ -216,15 +224,6 @@ def calculate_pi_cycle(closes):
         "top_risk": top_risk,
         "method": "pi_cycle_111dma_vs_350dma_x2"
     }
-
-
-async def get_btc_dominance():
-    data = await get_json("https://api.coingecko.com/api/v3/global")
-
-    if not data:
-        return None
-
-    return data.get("data", {}).get("market_cap_percentage", {}).get("btc")
 
 
 async def get_fear_greed():
@@ -418,8 +417,8 @@ async def get_hyperliquid_contexts():
     try:
         meta = data[0]
         asset_contexts = data[1]
-
         universe = meta.get("universe", [])
+
         result = {}
 
         for index, asset in enumerate(universe):
