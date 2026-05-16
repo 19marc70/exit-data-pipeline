@@ -50,14 +50,11 @@ async def get_json(url, params=None, headers=None):
     try:
         async with httpx.AsyncClient(timeout=25) as client:
             r = await client.get(url, params=params, headers=headers)
-
             if r.status_code in [401, 403, 429]:
                 print(f"HTTP BLOCK/RATE {r.status_code}: {url}")
                 return None
-
             r.raise_for_status()
             return r.json()
-
     except Exception as e:
         print(f"HTTP ERROR: {url} -> {e}")
         return None
@@ -67,14 +64,11 @@ async def post_json(url, payload=None, headers=None):
     try:
         async with httpx.AsyncClient(timeout=25) as client:
             r = await client.post(url, json=payload, headers=headers)
-
             if r.status_code in [401, 403, 429]:
                 print(f"HTTP POST BLOCK/RATE {r.status_code}: {url}")
                 return None
-
             r.raise_for_status()
             return r.json()
-
     except Exception as e:
         print(f"HTTP POST ERROR: {url} -> {e}")
         return None
@@ -105,16 +99,13 @@ def synthetic_atr(price, change_24h):
 def classify_volatility(price, atr):
     if price is None or atr is None or price == 0:
         return "⚪ unavailable"
-
     atr_pct = atr / price * 100
-
     if atr_pct >= 10:
         return "🔴 high"
     if atr_pct >= 5:
         return "🟠 elevated"
     if atr_pct >= 2:
         return "🟡 medium"
-
     return "🟢 low"
 
 
@@ -133,10 +124,8 @@ async def get_prices():
 
 async def get_btc_dominance():
     data = await get_json("https://api.coingecko.com/api/v3/global")
-
     if not data:
         return None
-
     return data.get("data", {}).get("market_cap_percentage", {}).get("btc")
 
 
@@ -149,10 +138,8 @@ async def get_btc_price_history():
             "interval": "daily"
         },
     )
-
     if not data:
         return []
-
     return [
         float(x[1])
         for x in data.get("prices", [])
@@ -204,7 +191,56 @@ def calculate_pi_cycle(closes):
     }
 
 
-async def get_cbbi():
+def extract_latest_numeric(raw):
+    if raw is None:
+        return None
+
+    if isinstance(raw, (int, float)):
+        return float(raw)
+
+    if isinstance(raw, str):
+        try:
+            return float(raw)
+        except Exception:
+            return None
+
+    if isinstance(raw, list):
+        nums = []
+        for item in raw:
+            val = extract_latest_numeric(item)
+            if val is not None:
+                nums.append(val)
+        return nums[-1] if nums else None
+
+    if isinstance(raw, dict):
+        preferred = [
+            "value",
+            "current",
+            "score",
+            "confidence",
+            "Confidence",
+            "latest",
+            "last"
+        ]
+
+        for key in preferred:
+            if raw.get(key) is not None:
+                val = extract_latest_numeric(raw.get(key))
+                if val is not None:
+                    return val
+
+        nums = []
+        for _, v in raw.items():
+            val = extract_latest_numeric(v)
+            if val is not None:
+                nums.append(val)
+
+        return nums[-1] if nums else None
+
+    return None
+
+
+async def get_cbbi_bundle():
     data = await get_json(
         "https://colintalkscrypto.com/cbbi/data/latest.json"
     )
@@ -212,96 +248,216 @@ async def get_cbbi():
     if not data:
         return {
             "available": False,
-            "value": None,
-            "state": "⚪ unavailable",
-            "reason": "cbbi_endpoint_unavailable",
             "source": "colintalkscrypto",
-        }
-
-    try:
-        value = None
-
-        for key in ["CBBI", "cbbi", "value", "index"]:
-            raw = data.get(key)
-
-            if raw is not None:
-                try:
-                    value = float(raw)
-                    break
-                except Exception:
-                    pass
-
-        if value is None:
-            confidence = data.get("Confidence")
-
-            if confidence is not None:
-                if isinstance(confidence, (int, float, str)):
-                    value = float(confidence)
-
-                elif isinstance(confidence, list):
-                    nums = []
-
-                    for x in confidence:
-                        try:
-                            nums.append(float(x))
-                        except Exception:
-                            pass
-
-                    if nums:
-                        value = nums[-1]
-
-                elif isinstance(confidence, dict):
-                    numeric_values = []
-
-                    for _, v in confidence.items():
-                        try:
-                            numeric_values.append(float(v))
-                        except Exception:
-                            pass
-
-                    if numeric_values:
-                        value = numeric_values[-1]
-
-        if value is None:
-            return {
+            "reason": "cbbi_endpoint_unavailable",
+            "raw_keys": None,
+            "cbbi": {
                 "available": False,
                 "value": None,
-                "state": "⚪ unavailable",
-                "reason": "cbbi_parse_failed",
-                "source": "colintalkscrypto",
-                "raw_keys": list(data.keys()) if isinstance(data, dict) else None,
-            }
+                "state": "⚪ unavailable"
+            },
+            "macro_components": {}
+        }
 
-        if value >= 85:
+    raw_keys = list(data.keys()) if isinstance(data, dict) else None
+
+    def get_component(name):
+        raw = data.get(name) if isinstance(data, dict) else None
+        value = extract_latest_numeric(raw)
+
+        return {
+            "available": value is not None,
+            "value": round(value, 4) if value is not None else None,
+            "source_key": name
+        }
+
+    confidence_value = extract_latest_numeric(data.get("Confidence")) if isinstance(data, dict) else None
+
+    if confidence_value is None:
+        for key in ["CBBI", "cbbi", "value", "index"]:
+            if isinstance(data, dict):
+                confidence_value = extract_latest_numeric(data.get(key))
+                if confidence_value is not None:
+                    break
+
+    if confidence_value is None:
+        cbbi = {
+            "available": False,
+            "value": None,
+            "state": "⚪ unavailable",
+            "reason": "cbbi_parse_failed",
+            "source": "colintalkscrypto",
+            "raw_keys": raw_keys
+        }
+    else:
+        if confidence_value >= 85:
             state = "🔴 cycle_top_risk"
-        elif value >= 75:
+        elif confidence_value >= 75:
             state = "🟠 late_cycle"
-        elif value >= 55:
+        elif confidence_value >= 55:
             state = "🟡 mid_cycle"
-        elif value >= 30:
+        elif confidence_value >= 30:
             state = "🟢 early_mid_cycle"
         else:
             state = "🟢 accumulation_zone"
 
-        return {
+        cbbi = {
             "available": True,
-            "value": round(value, 2),
+            "value": round(confidence_value, 2),
             "state": state,
             "reason": "ok",
-            "source": "colintalkscrypto",
+            "source": "colintalkscrypto"
         }
 
-    except Exception as e:
+    macro_components = {
+        "mvrv": get_component("MVRV"),
+        "puell": get_component("Puell"),
+        "reserve_risk": get_component("ReserveRisk"),
+        "rupl": get_component("RUPL"),
+        "rhodl": get_component("RHODL"),
+        "two_year_ma": get_component("2YMA"),
+        "pi_cycle_raw": get_component("PiCycle")
+    }
+
+    return {
+        "available": cbbi.get("available"),
+        "source": "colintalkscrypto",
+        "reason": "ok" if cbbi.get("available") else "cbbi_unavailable",
+        "raw_keys": raw_keys,
+        "cbbi": cbbi,
+        "macro_components": macro_components
+    }
+
+
+def classify_macro_component(name, value):
+    if value is None:
         return {
-            "available": False,
-            "value": None,
+            "score": 0,
             "state": "⚪ unavailable",
-            "reason": f"cbbi_parse_error:{e}",
-            "source": "colintalkscrypto",
+            "reason": f"{name}_missing"
         }
 
+    score = 0
+    state = "🟡 neutral"
+    reason = f"{name}_neutral"
 
-def build_cycle_score(pi_cycle, cbbi):
+    if name == "mvrv":
+        if value >= 3.5:
+            score = -20
+            state = "🔴 overvaluation_risk"
+            reason = "mvrv_extreme"
+        elif value >= 2.5:
+            score = -10
+            state = "🟠 elevated"
+            reason = "mvrv_elevated"
+        elif value <= 1.0:
+            score = 10
+            state = "🟢 undervalued"
+            reason = "mvrv_accumulation"
+
+    elif name == "puell":
+        if value >= 4:
+            score = -15
+            state = "🔴 miner_overheat"
+            reason = "puell_extreme"
+        elif value >= 2.5:
+            score = -8
+            state = "🟠 elevated"
+            reason = "puell_elevated"
+        elif value <= 0.6:
+            score = 8
+            state = "🟢 miner_capitulation_zone"
+            reason = "puell_accumulation"
+
+    elif name == "reserve_risk":
+        if value >= 0.02:
+            score = -15
+            state = "🔴 long_term_holder_risk"
+            reason = "reserve_risk_high"
+        elif value >= 0.01:
+            score = -8
+            state = "🟠 elevated"
+            reason = "reserve_risk_elevated"
+        elif value <= 0.002:
+            score = 8
+            state = "🟢 conviction_discount"
+            reason = "reserve_risk_low"
+
+    elif name == "rupl":
+        if value >= 0.75:
+            score = -15
+            state = "🔴 unrealized_profit_extreme"
+            reason = "rupl_extreme"
+        elif value >= 0.55:
+            score = -8
+            state = "🟠 elevated_profit"
+            reason = "rupl_elevated"
+        elif value <= 0.25:
+            score = 8
+            state = "🟢 low_unrealized_profit"
+            reason = "rupl_accumulation"
+
+    elif name == "rhodl":
+        if value >= 50000:
+            score = -15
+            state = "🔴 cycle_heat"
+            reason = "rhodl_extreme"
+        elif value >= 25000:
+            score = -8
+            state = "🟠 elevated"
+            reason = "rhodl_elevated"
+        elif value <= 5000:
+            score = 8
+            state = "🟢 accumulation_zone"
+            reason = "rhodl_low"
+
+    return {
+        "score": score,
+        "state": state,
+        "reason": reason
+    }
+
+
+def build_macro_intelligence(macro_components):
+    score = 0
+    signals = {}
+    reasons = []
+
+    for name, component in macro_components.items():
+        value = component.get("value") if isinstance(component, dict) else None
+        classification = classify_macro_component(name, value)
+
+        signals[name] = {
+            "available": component.get("available") if isinstance(component, dict) else False,
+            "value": value,
+            "state": classification["state"],
+            "score": classification["score"],
+            "reason": classification["reason"]
+        }
+
+        score += classification["score"]
+
+        if classification["reason"] and not classification["reason"].endswith("_missing"):
+            reasons.append(classification["reason"])
+
+    if score <= -40:
+        state = "🔴 MACRO_TOP_RISK"
+    elif score <= -20:
+        state = "🟠 MACRO_LATE_CYCLE"
+    elif score < 10:
+        state = "🟡 MACRO_NEUTRAL"
+    else:
+        state = "🟢 MACRO_ACCUMULATION_SUPPORT"
+
+    return {
+        "macro_score": score,
+        "macro_state": state,
+        "signals": signals,
+        "reasons": reasons
+    }
+
+
+def build_cycle_score(pi_cycle, cbbi, macro_intelligence):
     score = 0
     reasons = []
 
@@ -330,11 +486,17 @@ def build_cycle_score(pi_cycle, cbbi):
     else:
         reasons.append("cbbi_missing")
 
-    if score <= -45:
-        state = "🔴 TOP_RISK"
-    elif score <= -20:
-        state = "🟠 LATE_CYCLE"
-    elif score < 10:
+    macro_score = macro_intelligence.get("macro_score", 0)
+    score += macro_score
+
+    for reason in macro_intelligence.get("reasons", []):
+        reasons.append(reason)
+
+    if score <= -60:
+        state = "🔴 FULL_CYCLE_TOP_RISK"
+    elif score <= -30:
+        state = "🟠 LATE_CYCLE_RISK"
+    elif score < 15:
         state = "🟡 NEUTRAL_CYCLE"
     else:
         state = "🟢 ACCUMULATION_SUPPORT"
@@ -654,8 +816,13 @@ async def build_exit_snapshot():
     fear_greed = await get_fear_greed()
     btc_history = await get_btc_price_history()
     pi_cycle = calculate_pi_cycle(btc_history)
-    cbbi = await get_cbbi()
-    cycle_intelligence = build_cycle_score(pi_cycle, cbbi)
+
+    cbbi_bundle = await get_cbbi_bundle()
+    cbbi = cbbi_bundle.get("cbbi", {})
+    macro_components = cbbi_bundle.get("macro_components", {})
+    macro_intelligence = build_macro_intelligence(macro_components)
+    cycle_intelligence = build_cycle_score(pi_cycle, cbbi, macro_intelligence)
+
     hyperliquid_contexts = await get_hyperliquid_contexts()
 
     if not prices:
@@ -717,6 +884,15 @@ async def build_exit_snapshot():
         elif fg >= 75:
             stablecoin_regime = "🔴 euphoric_risk"
 
+    missing_data = []
+
+    if not cbbi.get("available"):
+        missing_data.append("cbbi_live_parse_or_endpoint")
+
+    for name, item in macro_components.items():
+        if not item.get("available"):
+            missing_data.append(f"{name}_macro_component")
+
     snapshot = {
         "timestamp": now_iso(),
         "status": "ok",
@@ -726,6 +902,7 @@ async def build_exit_snapshot():
         "coinglass_enabled": bool(COINGLASS_API_KEY),
         "hyperliquid_fallback_enabled": True,
         "cycle_intelligence_enabled": True,
+        "macro_intelligence_enabled": True,
         "cbbi_enabled": cbbi.get("available"),
         "coins": coins,
         "btc": {
@@ -734,10 +911,12 @@ async def build_exit_snapshot():
             "altseason_index": altseason_index,
             "stablecoin_regime": stablecoin_regime,
             "cbbi": cbbi,
+            "macro_components": macro_components,
+            "macro_intelligence": macro_intelligence,
             "pi_cycle": pi_cycle,
             "cycle_intelligence": cycle_intelligence,
         },
-        "missing_data": [] if cbbi.get("available") else ["cbbi_live_parse_or_endpoint"],
+        "missing_data": missing_data,
     }
 
     CACHE["snapshot"] = snapshot
