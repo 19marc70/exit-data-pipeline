@@ -1,4 +1,4 @@
-ENGINE_VERSION = "1.9-phase-19-exit-zone-intelligence-v2"
+ENGINE_VERSION = "2.0-phase-20-adaptive-sell-engine"
 
 PORTFOLIO = {
     "XRP": {"sellable": 0.0, "moonbag": 11093.0},
@@ -58,6 +58,84 @@ def max_daily_pct_from_liquidity(liquidity):
     return 15
 
 
+def liquidity_multiplier(liquidity):
+    if text_contains(liquidity, "severe"):
+        return 0.0
+    if text_contains(liquidity, "moderate"):
+        return 0.55
+    return 1.0
+
+
+def volatility_multiplier(volatility):
+    if text_contains(volatility, "high"):
+        return 0.45
+    if text_contains(volatility, "elevated"):
+        return 0.65
+    if text_contains(volatility, "medium"):
+        return 0.85
+    if text_contains(volatility, "low"):
+        return 1.0
+    return 0.75
+
+
+def atr_multiplier(price, atr):
+    price = safe_float(price)
+    atr = safe_float(atr)
+
+    if price <= 0 or atr <= 0:
+        return 0.75
+
+    atr_pct = (atr / price) * 100
+
+    if atr_pct >= 10:
+        return 0.40
+    if atr_pct >= 6:
+        return 0.55
+    if atr_pct >= 3:
+        return 0.75
+    if atr_pct >= 1:
+        return 0.90
+
+    return 1.0
+
+
+def position_size_multiplier(symbol):
+    sellable = safe_float(PORTFOLIO.get(symbol, {}).get("sellable"))
+
+    if sellable <= 0:
+        return 0.0
+
+    if symbol == "CFG":
+        return 0.50
+
+    if sellable >= 20_000:
+        return 0.85
+
+    if sellable >= 10_000:
+        return 0.90
+
+    return 1.0
+
+
+def estimate_slippage_risk(liquidity, volatility, sell_qty, max_daily_qty):
+    if sell_qty <= 0:
+        return "none"
+
+    if text_contains(liquidity, "severe"):
+        return "above_5pct_blocked"
+
+    if max_daily_qty > 0 and sell_qty > max_daily_qty:
+        return "above_daily_limit"
+
+    if text_contains(volatility, "high"):
+        return "elevated"
+
+    if text_contains(volatility, "elevated") and text_contains(liquidity, "moderate"):
+        return "elevated"
+
+    return "controlled"
+
+
 def score_market_structure(coin):
     score = 0
     reasons = []
@@ -73,7 +151,6 @@ def score_market_structure(coin):
         score -= 8
         reasons.append("trend_strengthening")
     elif text_contains(trend, "sideways"):
-        score += 0
         reasons.append("trend_sideways")
 
     if text_contains(volatility, "high"):
@@ -118,8 +195,6 @@ def score_derivatives(coin):
         score += 10
     elif text_contains(leverage_risk, "short_pressure"):
         score -= 8
-    elif text_contains(leverage_risk, "neutral"):
-        score += 0
 
     return score, reasons
 
@@ -206,35 +281,125 @@ def determine_global_action(exit_zone_score, multi_category_confirmed):
     return "NO_FULL_EXIT"
 
 
-def determine_sell_pct(exit_zone_score, symbol, liquidity, blockers, confirmations):
+def base_sell_pct_from_exit_zone(exit_zone_score):
+    if exit_zone_score >= 80:
+        return 50
+    if exit_zone_score >= 60:
+        return 25
+    if exit_zone_score >= 40:
+        return 10
+    return 0
+
+
+def adaptive_sell_engine(symbol, coin, exit_zone_score, liquidity, blockers, confirmations):
+    sellable = safe_float(PORTFOLIO.get(symbol, {}).get("sellable"))
+    price = safe_float(coin.get("usd"))
+    atr = safe_float(coin.get("atr_14d"))
+    volatility = coin.get("volatility")
+
+    base_sell_pct = base_sell_pct_from_exit_zone(exit_zone_score)
+
+    multipliers = {
+        "liquidity": liquidity_multiplier(liquidity),
+        "volatility": volatility_multiplier(volatility),
+        "atr": atr_multiplier(price, atr),
+        "position_size": position_size_multiplier(symbol),
+    }
+
+    reasons = []
+
     if symbol not in SELL_TARGETS:
-        return 0
+        return {
+            "base_sell_pct": 0,
+            "adaptive_sell_pct": 0,
+            "target_total_qty": 0.0,
+            "today_sell_qty": 0.0,
+            "max_daily_qty": 0.0,
+            "execution_days_estimate": 0,
+            "slippage_risk": "blocked",
+            "execution_style": "no_sell_target",
+            "multipliers": multipliers,
+            "reasons": ["not_sell_target"]
+        }
 
     if "insufficient_multi_factor_confirmation" in blockers:
-        return 0
+        reasons.append("blocked_insufficient_multi_factor_confirmation")
 
     if "execution_liquidity_severe" in blockers:
-        return 0
+        reasons.append("blocked_execution_liquidity_severe")
+
+    if "no_trade_if_expected_slippage_above_5pct" in blockers:
+        reasons.append("blocked_expected_slippage_above_5pct")
 
     if len(confirmations) < 2:
-        return 0
+        reasons.append("blocked_less_than_two_confirmations")
 
-    if exit_zone_score >= 80:
-        base = 50
-    elif exit_zone_score >= 60:
-        base = 25
-    elif exit_zone_score >= 40:
-        base = 10
-    else:
-        base = 0
+    if reasons:
+        return {
+            "base_sell_pct": base_sell_pct,
+            "adaptive_sell_pct": 0,
+            "target_total_qty": 0.0,
+            "today_sell_qty": 0.0,
+            "max_daily_qty": round(sellable * max_daily_pct_from_liquidity(liquidity) / 100, 6),
+            "execution_days_estimate": 0,
+            "slippage_risk": "blocked",
+            "execution_style": "hold",
+            "multipliers": multipliers,
+            "reasons": reasons
+        }
+
+    adjusted_pct = base_sell_pct
+
+    for value in multipliers.values():
+        adjusted_pct *= value
 
     if text_contains(liquidity, "moderate"):
-        base = min(base, 10)
+        adjusted_pct = min(adjusted_pct, 10)
 
     if text_contains(liquidity, "severe"):
-        base = 0
+        adjusted_pct = 0
 
-    return base
+    adaptive_sell_pct = round(max(0, min(50, adjusted_pct)), 2)
+
+    max_daily_pct = max_daily_pct_from_liquidity(liquidity)
+    max_daily_qty = round(sellable * max_daily_pct / 100, 6)
+
+    target_total_qty = round(sellable * adaptive_sell_pct / 100, 6)
+    today_sell_qty = round(min(target_total_qty, max_daily_qty), 6)
+
+    if max_daily_qty > 0 and target_total_qty > 0:
+        execution_days_estimate = int((target_total_qty + max_daily_qty - 0.000001) // max_daily_qty)
+        if target_total_qty % max_daily_qty > 0:
+            execution_days_estimate += 1
+    else:
+        execution_days_estimate = 0
+
+    slippage_risk = estimate_slippage_risk(liquidity, volatility, today_sell_qty, max_daily_qty)
+
+    if slippage_risk in ["above_5pct_blocked", "above_daily_limit"]:
+        today_sell_qty = 0.0
+        adaptive_sell_pct = 0
+        reasons.append(slippage_risk)
+
+    if adaptive_sell_pct >= 25:
+        execution_style = "multi_day_ladder"
+    elif adaptive_sell_pct > 0:
+        execution_style = "limit_ladder"
+    else:
+        execution_style = "hold"
+
+    return {
+        "base_sell_pct": base_sell_pct,
+        "adaptive_sell_pct": adaptive_sell_pct,
+        "target_total_qty": target_total_qty,
+        "today_sell_qty": today_sell_qty,
+        "max_daily_qty": max_daily_qty,
+        "execution_days_estimate": execution_days_estimate,
+        "slippage_risk": slippage_risk,
+        "execution_style": execution_style,
+        "multipliers": multipliers,
+        "reasons": reasons if reasons else ["adaptive_execution_ok"]
+    }
 
 
 def build_allocation_plan(global_action, exit_zone_score):
@@ -334,8 +499,10 @@ def build_exit_engine(snapshot):
 
         if structure_score >= 20:
             confirmations.append("market_structure_risk")
+
         if derivatives_score >= 10:
             confirmations.append("derivatives_risk")
+
         if macro_cycle_score >= 20:
             confirmations.append("macro_cycle_risk")
 
@@ -348,7 +515,7 @@ def build_exit_engine(snapshot):
         raw_score = coin_risk - macro_cycle_score
 
         max_daily_pct = max_daily_pct_from_liquidity(liquidity)
-        sellable = PORTFOLIO.get(symbol, {}).get("sellable", 0.0)
+        sellable = safe_float(PORTFOLIO.get(symbol, {}).get("sellable"))
         max_daily_qty = round(sellable * max_daily_pct / 100, 6)
 
         signals[symbol] = {
@@ -368,58 +535,63 @@ def build_exit_engine(snapshot):
             "derivatives": coin.get("derivatives", {}),
             "sell_qty": 0.0,
             "max_daily_qty": 0.0 if symbol == "XRP" else max_daily_qty,
-            "execution_type": "limit_or_ladder_only"
+            "execution_type": "limit_or_ladder_only",
+            "adaptive_execution": {}
         }
 
     avg_coin_risk = sum(coin_risk_scores) / len(coin_risk_scores) if coin_risk_scores else 0
-
     market_structure_score = max(0, avg_coin_risk)
     exit_zone_score = round(max(0, macro_cycle_score + market_structure_score), 2)
 
     category_confirmations = 0
+
     if macro_cycle_score >= 20:
         category_confirmations += 1
+
     if market_structure_score >= 20:
         category_confirmations += 1
-    if any(
-        score_derivatives(coin)[0] >= 10
-        for coin in coins.values()
-    ):
+
+    if any(score_derivatives(coin)[0] >= 10 for coin in coins.values()):
         category_confirmations += 1
 
     multi_category_confirmed = category_confirmations >= 2
-
     global_action = determine_global_action(exit_zone_score, multi_category_confirmed)
 
     for symbol, signal in signals.items():
-        sell_pct = determine_sell_pct(
-            exit_zone_score,
-            symbol,
-            signal["liquidity"],
-            signal["blockers"],
-            signal["confirmations"]
+        coin = coins.get(symbol, {})
+
+        adaptive = adaptive_sell_engine(
+            symbol=symbol,
+            coin=coin,
+            exit_zone_score=exit_zone_score,
+            liquidity=signal["liquidity"],
+            blockers=signal["blockers"],
+            confirmations=signal["confirmations"]
         )
 
-        sellable = PORTFOLIO.get(symbol, {}).get("sellable", 0.0)
-        sell_qty = round(sellable * sell_pct / 100, 6)
+        sell_pct = adaptive["adaptive_sell_pct"]
+        sell_qty = adaptive["today_sell_qty"]
 
         if sell_pct > 0:
-            if sell_pct >= 50:
-                signal_name = "SELL_50"
-            elif sell_pct >= 25:
-                signal_name = "SELL_25"
+            if sell_pct >= 25:
+                signal_name = "SELL_ADAPTIVE_25"
+            elif sell_pct >= 10:
+                signal_name = "SELL_ADAPTIVE_10"
             else:
-                signal_name = "SELL_10"
+                signal_name = "SELL_ADAPTIVE_LIGHT"
         else:
             signal_name = "HOLD_NO_SELL_TARGET" if symbol == "XRP" else "HOLD"
 
         signal["signal"] = signal_name
         signal["sell_pct"] = sell_pct
         signal["sell_qty"] = sell_qty
+        signal["target_total_sell_qty"] = adaptive["target_total_qty"]
+        signal["max_daily_qty"] = adaptive["max_daily_qty"]
+        signal["execution_type"] = adaptive["execution_style"]
+        signal["adaptive_execution"] = adaptive
 
     allocation_plan = build_allocation_plan(global_action, exit_zone_score)
     reentry_engine = build_reentry_engine(snapshot, global_action)
-
     btc = snapshot.get("btc", {})
 
     return {
@@ -442,9 +614,12 @@ def build_exit_engine(snapshot):
         },
         "guardrails": GUARDRAILS,
         "execution_engine": {
-            "execution_type": "limit_or_ladder_only",
+            "execution_type": "adaptive_limit_ladder_only",
             "moonbags_protected": True,
             "liquidity_respect_required": True,
+            "atr_adjusted_sizing": True,
+            "volatility_adjusted_sizing": True,
+            "position_size_adjusted_sizing": True,
             "no_trade_if_expected_slippage_above_5pct": True
         },
         "allocation_plan": allocation_plan,
