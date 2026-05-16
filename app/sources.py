@@ -24,10 +24,10 @@ COINS = {
 }
 
 DERIVATIVE_SYMBOLS = {
-    "XRP": "XRP",
-    "ONDO": "ONDO",
-    "AERO": "AERO",
-    "CFG": "CFG"
+    "XRP": "XRPUSDT",
+    "ONDO": "ONDOUSDT",
+    "AERO": "AEROUSDT",
+    "CFG": "CFGUSDT"
 }
 
 
