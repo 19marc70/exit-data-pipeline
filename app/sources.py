@@ -93,14 +93,12 @@ def classify_trend(change_24h):
 def synthetic_rsi(change_24h):
     if change_24h is None:
         return 50
-
     return round(max(5, min(95, 50 + change_24h * 3)), 2)
 
 
 def synthetic_atr(price, change_24h):
     if price is None or change_24h is None:
         return 0
-
     return round(price * abs(change_24h) / 100, 6)
 
 
@@ -223,72 +221,46 @@ async def get_cbbi():
     try:
         value = None
 
-        keys = [
-            "CBBI",
-            "cbbi",
-            "value",
-            "confidence",
-            "Confidence",
-            "index"
-        ]
+        for key in ["CBBI", "cbbi", "value", "index"]:
+            raw = data.get(key)
 
-        subkeys = [
-            "value",
-            "current",
-            "score",
-            "confidence",
-            "Confidence"
-        ]
-
-        if isinstance(data, dict):
-            for key in keys:
-                raw = data.get(key)
-
-                if raw is None:
-                    continue
-
+            if raw is not None:
                 try:
-                    if isinstance(raw, (int, float, str)):
-                        value = float(raw)
-                        break
-
-                    if isinstance(raw, dict):
-                        for subkey in subkeys:
-                            if raw.get(subkey) is not None:
-                                value = float(raw.get(subkey))
-                                break
-
-                        if value is not None:
-                            break
-
+                    value = float(raw)
+                    break
                 except Exception:
-                    continue
+                    pass
 
-            if value is None and isinstance(data.get("data"), dict):
-                nested = data.get("data")
+        if value is None:
+            confidence = data.get("Confidence")
 
-                for key in keys:
-                    raw = nested.get(key)
+            if confidence is not None:
+                if isinstance(confidence, (int, float, str)):
+                    value = float(confidence)
 
-                    if raw is None:
-                        continue
+                elif isinstance(confidence, list):
+                    nums = []
 
-                    try:
-                        if isinstance(raw, (int, float, str)):
-                            value = float(raw)
-                            break
+                    for x in confidence:
+                        try:
+                            nums.append(float(x))
+                        except Exception:
+                            pass
 
-                        if isinstance(raw, dict):
-                            for subkey in subkeys:
-                                if raw.get(subkey) is not None:
-                                    value = float(raw.get(subkey))
-                                    break
+                    if nums:
+                        value = nums[-1]
 
-                            if value is not None:
-                                break
+                elif isinstance(confidence, dict):
+                    numeric_values = []
 
-                    except Exception:
-                        continue
+                    for _, v in confidence.items():
+                        try:
+                            numeric_values.append(float(v))
+                        except Exception:
+                            pass
+
+                    if numeric_values:
+                        value = numeric_values[-1]
 
         if value is None:
             return {
