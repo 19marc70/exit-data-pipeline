@@ -148,6 +148,76 @@ async def get_prices():
     )
 
 
+async def get_btc_price_history():
+    data = await get_json(
+        "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart",
+        {
+            "vs_currency": "usd",
+            "days": "420",
+            "interval": "daily"
+        }
+    )
+
+    if not data:
+        return []
+
+    prices = data.get("prices", [])
+
+    closes = []
+
+    for item in prices:
+        if isinstance(item, list) and len(item) >= 2:
+            closes.append(float(item[1]))
+
+    return closes
+
+
+def calculate_pi_cycle(closes):
+    if not closes or len(closes) < 350:
+        return {
+            "status": "unknown",
+            "cycle_state": "⚪ insufficient_history",
+            "distance_pct": None,
+            "ma_111": None,
+            "ma_350x2": None,
+            "top_risk": False,
+            "method": "pi_cycle_111dma_vs_350dma_x2"
+        }
+
+    ma_111 = sum(closes[-111:]) / 111
+    ma_350 = sum(closes[-350:]) / 350
+    ma_350x2 = ma_350 * 2
+
+    distance_pct = ((ma_350x2 - ma_111) / ma_111) * 100
+
+    if distance_pct <= 0:
+        cycle_state = "🔴 TOP_RISK"
+        status = "top_risk"
+        top_risk = True
+    elif distance_pct <= 10:
+        cycle_state = "🟠 LATE_CYCLE"
+        status = "late_cycle"
+        top_risk = False
+    elif distance_pct <= 25:
+        cycle_state = "🟡 MID_LATE_CYCLE"
+        status = "mid_late_cycle"
+        top_risk = False
+    else:
+        cycle_state = "🟢 EARLY_MID_CYCLE"
+        status = "early_mid_cycle"
+        top_risk = False
+
+    return {
+        "status": status,
+        "cycle_state": cycle_state,
+        "distance_pct": round(distance_pct, 2),
+        "ma_111": round(ma_111, 2),
+        "ma_350x2": round(ma_350x2, 2),
+        "top_risk": top_risk,
+        "method": "pi_cycle_111dma_vs_350dma_x2"
+    }
+
+
 async def get_btc_dominance():
     data = await get_json("https://api.coingecko.com/api/v3/global")
 
@@ -350,7 +420,6 @@ async def get_hyperliquid_contexts():
         asset_contexts = data[1]
 
         universe = meta.get("universe", [])
-
         result = {}
 
         for index, asset in enumerate(universe):
@@ -496,6 +565,8 @@ async def build_exit_snapshot():
     prices = await get_prices()
     btc_dominance = await get_btc_dominance()
     fear_greed = await get_fear_greed()
+    btc_history = await get_btc_price_history()
+    pi_cycle = calculate_pi_cycle(btc_history)
     hyperliquid_contexts = await get_hyperliquid_contexts()
 
     if not prices:
@@ -575,6 +646,7 @@ async def build_exit_snapshot():
         "cache_ttl_seconds": CACHE_TTL_SECONDS,
         "coinglass_enabled": bool(COINGLASS_API_KEY),
         "hyperliquid_fallback_enabled": True,
+        "cycle_intelligence_enabled": True,
         "coins": coins,
         "btc": {
             "dominance": btc_dominance,
@@ -582,14 +654,10 @@ async def build_exit_snapshot():
             "altseason_index": altseason_index,
             "stablecoin_regime": stablecoin_regime,
             "cbbi": None,
-            "pi_cycle": {
-                "status": "unknown",
-                "distance_pct": None
-            }
+            "pi_cycle": pi_cycle
         },
         "missing_data": [
-            "cbbi",
-            "pi_cycle"
+            "cbbi"
         ]
     }
 
