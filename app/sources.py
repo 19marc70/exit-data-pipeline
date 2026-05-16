@@ -232,17 +232,63 @@ async def get_cbbi():
             "index"
         ]
 
+        subkeys = [
+            "value",
+            "current",
+            "score",
+            "confidence",
+            "Confidence"
+        ]
+
         if isinstance(data, dict):
             for key in keys:
-                if data.get(key) is not None:
-                    value = float(data.get(key))
-                    break
+                raw = data.get(key)
+
+                if raw is None:
+                    continue
+
+                try:
+                    if isinstance(raw, (int, float, str)):
+                        value = float(raw)
+                        break
+
+                    if isinstance(raw, dict):
+                        for subkey in subkeys:
+                            if raw.get(subkey) is not None:
+                                value = float(raw.get(subkey))
+                                break
+
+                        if value is not None:
+                            break
+
+                except Exception:
+                    continue
 
             if value is None and isinstance(data.get("data"), dict):
+                nested = data.get("data")
+
                 for key in keys:
-                    if data["data"].get(key) is not None:
-                        value = float(data["data"].get(key))
-                        break
+                    raw = nested.get(key)
+
+                    if raw is None:
+                        continue
+
+                    try:
+                        if isinstance(raw, (int, float, str)):
+                            value = float(raw)
+                            break
+
+                        if isinstance(raw, dict):
+                            for subkey in subkeys:
+                                if raw.get(subkey) is not None:
+                                    value = float(raw.get(subkey))
+                                    break
+
+                            if value is not None:
+                                break
+
+                    except Exception:
+                        continue
 
         if value is None:
             return {
