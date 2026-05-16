@@ -1,10 +1,30 @@
-ENGINE_VERSION = "2.0-phase-20-adaptive-sell-engine"
+ENGINE_VERSION = "2.2-phase-22-portfolio-intelligence-engine"
 
 PORTFOLIO = {
-    "XRP": {"sellable": 0.0, "moonbag": 11093.0},
-    "ONDO": {"sellable": 21369.0243205, "moonbag": 1925.0},
-    "AERO": {"sellable": 10000.553, "moonbag": 750.0},
-    "CFG": {"sellable": 10383.736, "moonbag": 744.0},
+    "XRP": {
+        "qty": 11093.5,
+        "sellable": 0.0,
+        "moonbag": 11093.5,
+        "avg_entry": 0.9699,
+    },
+    "ONDO": {
+        "qty": 21369.0243205,
+        "sellable": 21369.0243205,
+        "moonbag": 1925.0,
+        "avg_entry": 0.5018,
+    },
+    "AERO": {
+        "qty": 10000.55320756,
+        "sellable": 10000.55320756,
+        "moonbag": 750.0,
+        "avg_entry": 0.63,
+    },
+    "CFG": {
+        "qty": 10383.73602082,
+        "sellable": 10383.73602082,
+        "moonbag": 744.0,
+        "avg_entry": 0.2251,
+    },
 }
 
 GUARDRAILS = {
@@ -265,6 +285,120 @@ def score_cycle_and_macro(snapshot):
     return risk_score, reasons
 
 
+def build_portfolio_intelligence(snapshot):
+    coins = snapshot.get("coins", {})
+    positions = {}
+
+    total_value = 0.0
+    total_cost = 0.0
+    total_unrealized_pnl = 0.0
+
+    for symbol, config in PORTFOLIO.items():
+        coin = coins.get(symbol, {})
+
+        qty = safe_float(config.get("qty"))
+        avg_entry = safe_float(config.get("avg_entry"))
+        price = safe_float(coin.get("usd"))
+
+        market_value = qty * price
+        cost_basis = qty * avg_entry
+        unrealized_pnl = market_value - cost_basis
+
+        pnl_pct = 0.0
+        if cost_basis > 0:
+            pnl_pct = (unrealized_pnl / cost_basis) * 100
+
+        total_value += market_value
+        total_cost += cost_basis
+        total_unrealized_pnl += unrealized_pnl
+
+        positions[symbol] = {
+            "qty": round(qty, 8),
+            "avg_entry": round(avg_entry, 6),
+            "current_price": round(price, 6),
+            "market_value": round(market_value, 2),
+            "cost_basis": round(cost_basis, 2),
+            "unrealized_pnl": round(unrealized_pnl, 2),
+            "pnl_pct": round(pnl_pct, 2),
+            "allocation_pct": 0.0,
+            "risk_state": "unknown"
+        }
+
+    largest_position = None
+    largest_position_pct = 0.0
+
+    for symbol, position in positions.items():
+        allocation_pct = 0.0
+
+        if total_value > 0:
+            allocation_pct = (position["market_value"] / total_value) * 100
+
+        risk_state = "normal"
+
+        if allocation_pct >= 50:
+            risk_state = "high_concentration"
+        elif allocation_pct >= 35:
+            risk_state = "medium_concentration"
+
+        if position["pnl_pct"] <= -35:
+            risk_state = "deep_drawdown"
+        elif position["pnl_pct"] <= -25 and risk_state == "normal":
+            risk_state = "drawdown_watch"
+
+        position["allocation_pct"] = round(allocation_pct, 2)
+        position["risk_state"] = risk_state
+
+        if allocation_pct > largest_position_pct:
+            largest_position_pct = allocation_pct
+            largest_position = symbol
+
+    portfolio_pnl_pct = 0.0
+    if total_cost > 0:
+        portfolio_pnl_pct = (total_unrealized_pnl / total_cost) * 100
+
+    concentration_score = 0
+
+    if largest_position_pct >= 60:
+        concentration_score = 25
+    elif largest_position_pct >= 50:
+        concentration_score = 15
+    elif largest_position_pct >= 35:
+        concentration_score = 8
+
+    drawdown_score = 0
+
+    for position in positions.values():
+        if position["pnl_pct"] <= -35:
+            drawdown_score += 10
+        elif position["pnl_pct"] <= -25:
+            drawdown_score += 5
+
+    portfolio_risk_score = concentration_score + drawdown_score
+
+    if portfolio_risk_score >= 30:
+        portfolio_state = "HIGH_RISK"
+    elif portfolio_risk_score >= 15:
+        portfolio_state = "MEDIUM_RISK"
+    else:
+        portfolio_state = "LOW_RISK"
+
+    return {
+        "total_portfolio_value": round(total_value, 2),
+        "total_cost_basis": round(total_cost, 2),
+        "total_unrealized_pnl": round(total_unrealized_pnl, 2),
+        "portfolio_pnl_pct": round(portfolio_pnl_pct, 2),
+        "positions": positions,
+        "portfolio_risk": {
+            "portfolio_risk_score": portfolio_risk_score,
+            "concentration_score": concentration_score,
+            "drawdown_score": drawdown_score,
+            "largest_position": largest_position,
+            "largest_position_pct": round(largest_position_pct, 2),
+            "state": portfolio_state
+        }
+    }
+
+
 def determine_global_action(exit_zone_score, multi_category_confirmed):
     if exit_zone_score >= 80 and multi_category_confirmed:
         return "HEAVY_DISTRIBUTION"
@@ -402,7 +536,11 @@ def adaptive_sell_engine(symbol, coin, exit_zone_score, liquidity, blockers, con
     }
 
 
-def build_allocation_plan(global_action, exit_zone_score):
+def build_allocation_plan(global_action, exit_zone_score, portfolio_intelligence):
+    portfolio_risk = portfolio_intelligence.get("portfolio_risk", {})
+    largest_position = portfolio_risk.get("largest_position")
+    largest_position_pct = safe_float(portfolio_risk.get("largest_position_pct"))
+
     if global_action in ["HEAVY_DISTRIBUTION", "PARTIAL_EXIT_ALLOWED"]:
         stablecoin_target_pct = min(70, max(25, int(exit_zone_score)))
         status = "RAISE_STABLECOINS"
@@ -416,11 +554,17 @@ def build_allocation_plan(global_action, exit_zone_score):
         stablecoin_target_pct = 0
         status = "NO_NEW_STABLECOIN_ACTION"
 
+    concentration_note = "none"
+
+    if largest_position_pct >= 50:
+        concentration_note = f"{largest_position}_concentration_above_50pct"
+
     return {
         "stablecoin_target_pct": stablecoin_target_pct,
         "target_pct_of_realized_sales": stablecoin_target_pct,
         "status": status,
         "rule": "only_from_confirmed_sell_signals",
+        "portfolio_concentration_note": concentration_note,
         "xrp_allocation": {
             "action": "HOLD_10_YEAR_CORE",
             "sell_allowed": False
@@ -472,7 +616,19 @@ def build_exit_engine(snapshot):
     coins = snapshot.get("coins", {})
     missing = list(snapshot.get("missing_data", []))
 
+    portfolio_intelligence = build_portfolio_intelligence(snapshot)
     macro_cycle_score, macro_cycle_reasons = score_cycle_and_macro(snapshot)
+
+    portfolio_risk_score = safe_float(
+        portfolio_intelligence.get("portfolio_risk", {}).get("portfolio_risk_score")
+    )
+
+    if portfolio_risk_score >= 30:
+        macro_cycle_score += 10
+        macro_cycle_reasons.append("portfolio_high_risk_modifier")
+    elif portfolio_risk_score >= 15:
+        macro_cycle_score += 5
+        macro_cycle_reasons.append("portfolio_medium_risk_modifier")
 
     signals = {}
     coin_risk_scores = []
@@ -506,6 +662,19 @@ def build_exit_engine(snapshot):
         if macro_cycle_score >= 20:
             confirmations.append("macro_cycle_risk")
 
+        position = portfolio_intelligence.get("positions", {}).get(symbol, {})
+        allocation_pct = safe_float(position.get("allocation_pct"))
+        pnl_pct = safe_float(position.get("pnl_pct"))
+
+        if allocation_pct >= 35:
+            confirmations.append("portfolio_concentration_risk")
+
+        if pnl_pct >= 50:
+            confirmations.append("portfolio_profit_available")
+
+        if pnl_pct <= -30:
+            blockers.append("avoid_forced_sell_deep_drawdown")
+
         if len(confirmations) < 2:
             blockers.append("insufficient_multi_factor_confirmation")
 
@@ -532,6 +701,7 @@ def build_exit_engine(snapshot):
             "atr_14d": coin.get("atr_14d"),
             "trend": coin.get("trend"),
             "volatility": coin.get("volatility"),
+            "portfolio_position": position,
             "derivatives": coin.get("derivatives", {}),
             "sell_qty": 0.0,
             "max_daily_qty": 0.0 if symbol == "XRP" else max_daily_qty,
@@ -552,6 +722,9 @@ def build_exit_engine(snapshot):
         category_confirmations += 1
 
     if any(score_derivatives(coin)[0] >= 10 for coin in coins.values()):
+        category_confirmations += 1
+
+    if portfolio_risk_score >= 15:
         category_confirmations += 1
 
     multi_category_confirmed = category_confirmations >= 2
@@ -590,7 +763,7 @@ def build_exit_engine(snapshot):
         signal["execution_type"] = adaptive["execution_style"]
         signal["adaptive_execution"] = adaptive
 
-    allocation_plan = build_allocation_plan(global_action, exit_zone_score)
+    allocation_plan = build_allocation_plan(global_action, exit_zone_score, portfolio_intelligence)
     reentry_engine = build_reentry_engine(snapshot, global_action)
     btc = snapshot.get("btc", {})
 
@@ -602,6 +775,7 @@ def build_exit_engine(snapshot):
         "score_components": {
             "macro_cycle_risk_score": round(macro_cycle_score, 2),
             "market_structure_score": round(market_structure_score, 2),
+            "portfolio_risk_score": portfolio_risk_score,
             "category_confirmations": category_confirmations,
             "multi_category_confirmed": multi_category_confirmed,
             "macro_cycle_reasons": macro_cycle_reasons,
@@ -612,6 +786,7 @@ def build_exit_engine(snapshot):
             "fear_greed": btc.get("fear_greed"),
             "btc_dominance": btc.get("dominance"),
         },
+        "portfolio_intelligence": portfolio_intelligence,
         "guardrails": GUARDRAILS,
         "execution_engine": {
             "execution_type": "adaptive_limit_ladder_only",
@@ -620,6 +795,7 @@ def build_exit_engine(snapshot):
             "atr_adjusted_sizing": True,
             "volatility_adjusted_sizing": True,
             "position_size_adjusted_sizing": True,
+            "portfolio_aware_sizing": True,
             "no_trade_if_expected_slippage_above_5pct": True
         },
         "allocation_plan": allocation_plan,
