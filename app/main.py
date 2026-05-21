@@ -607,8 +607,8 @@ async def dashboard():
     <h2>Coin Signals</h2>
     <div id="coins" class="grid"></div>
 
-    <h2>Raw Engine Output</h2>
-    <pre id="raw"></pre>
+    <!-- Raw engine output verborgen -->
+<div id="raw" style="display:none;"></div>
 
 <script>
 function pctBar(value) {
@@ -774,7 +774,9 @@ async function loadData() {
         coinsDiv.appendChild(card);
     }
 
-    document.getElementById('raw').innerText = JSON.stringify(data, null, 2);
+    // Raw output verborgen
+document.getElementById('raw').innerText =
+    JSON.stringify(data, null, 2);
 }
 
 async function scanMarket() {
