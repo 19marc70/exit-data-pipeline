@@ -138,17 +138,19 @@ async def get_btc_price_history():
             "interval": "daily"
         },
     )
+
     if not data:
         return []
+
     closes = [
-    float(x[1])
-    for x in data.get("prices", [])
-    if isinstance(x, list) and len(x) >= 2
-]
+        float(x[1])
+        for x in data.get("prices", [])
+        if isinstance(x, list) and len(x) >= 2
+    ]
 
-print(f"BTC closes loaded: {len(closes)}")
+    print(f"BTC closes loaded: {len(closes)}")
 
-return closes
+    return closes
 
 
 def calculate_pi_cycle(closes):
