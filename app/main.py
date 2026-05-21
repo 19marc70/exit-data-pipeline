@@ -41,20 +41,15 @@ def alert_enabled():
 
 
 def should_alert(engine):
-    global_action = engine.get("global_action")
-    signals = engine.get("signals", {})
-
-    if global_action in [
-        "RISK_OFF",
+    if engine.get("global_action") in [
         "PARTIAL_EXIT_ALLOWED",
         "LIGHT_TRIM_ALLOWED",
         "HEAVY_DISTRIBUTION"
     ]:
         return True
 
-    for coin in signals.values():
-        signal = coin.get("signal", "")
-        if signal.startswith("SELL"):
+    for coin in engine.get("signals", {}).values():
+        if str(coin.get("signal", "")).startswith("SELL"):
             return True
 
     return False
@@ -69,20 +64,16 @@ def build_alert_message(engine):
         ""
     ]
 
-    score_components = engine.get("score_components", {})
-    lines.append(f"Macro/Cycle score: {score_components.get('macro_cycle_risk_score')}")
-    lines.append(f"Market structure: {score_components.get('market_structure_score')}")
-    lines.append("")
-
     for symbol, coin in engine.get("signals", {}).items():
-        signal = coin.get("signal")
-        if signal not in ["HOLD", "HOLD_NO_SELL_TARGET"]:
+        if str(coin.get("signal", "")).startswith("SELL"):
             lines.append(
-                f"{symbol}: {signal} | sell {coin.get('sell_pct')}% | "
-                f"qty {coin.get('sell_qty')} | liquidity {coin.get('liquidity')}"
+                f"{symbol}: {coin.get('signal')} | "
+                f"sell {coin.get('sell_pct')}% | "
+                f"qty {coin.get('sell_qty')} | "
+                f"liquidity {coin.get('liquidity')}"
             )
 
-    if len(lines) <= 7:
+    if len(lines) <= 5:
         lines.append("No active sell trigger. Monitoring only.")
 
     return "\n".join(lines)
@@ -90,20 +81,14 @@ def build_alert_message(engine):
 
 async def send_telegram(message):
     if not alert_enabled():
-        return {
-            "sent": False,
-            "reason": "telegram_not_configured"
-        }
+        return {"sent": False, "reason": "telegram_not_configured"}
 
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
 
     async with httpx.AsyncClient(timeout=20) as client:
         response = await client.post(
             url,
-            json={
-                "chat_id": TELEGRAM_CHAT_ID,
-                "text": message
-            }
+            json={"chat_id": TELEGRAM_CHAT_ID, "text": message}
         )
 
     return {
@@ -115,18 +100,12 @@ async def send_telegram(message):
 
 async def maybe_send_alert(engine):
     if not should_alert(engine):
-        return {
-            "alert": False,
-            "reason": "no_trigger"
-        }
+        return {"alert": False, "reason": "no_trigger"}
 
     now = time.time()
 
     if now - ALERT_CACHE["last_alert_ts"] < ALERT_COOLDOWN_SECONDS:
-        return {
-            "alert": False,
-            "reason": "cooldown_active"
-        }
+        return {"alert": False, "reason": "cooldown_active"}
 
     message = build_alert_message(engine)
     result = await send_telegram(message)
@@ -134,11 +113,7 @@ async def maybe_send_alert(engine):
     ALERT_CACHE["last_alert_ts"] = now
     ALERT_CACHE["last_message"] = message
 
-    return {
-        "alert": True,
-        "telegram": result,
-        "message": message
-    }
+    return {"alert": True, "telegram": result, "message": message}
 
 
 async def run_scan():
@@ -197,6 +172,12 @@ Score:
 Verkoop:
 {coin.get("sell_pct")}% / {coin.get("sell_qty")} vandaag
 
+Target total sell qty:
+{coin.get("target_total_sell_qty")}
+
+Max daily qty:
+{coin.get("max_daily_qty")}
+
 Trend:
 {coin.get("trend")}
 
@@ -248,13 +229,13 @@ def build_today_answer(engine):
 🎯 REDEN:
 Exit Zone Score = {engine.get("exit_zone_score")}.
 Multi-category confirmed = {sc.get("multi_category_confirmed")}.
-Er is dus geen volledige exit zolang meerdere categorieën niet samen bevestigen.
+Geen volledige exit zolang meerdere categorieën niet samen bevestigen.
 
 ⏰ URGENTIE:
 Laag tot middelmatig.
 
 💧 EXECUTION:
-Geen verkoop tenzij een coin specifiek een SELL-signaal krijgt.
+Alleen verkopen wanneer een coin specifiek een SELL-signaal krijgt.
 
 📊 BLOK 2 — MARKT & SIGNALEN
 
@@ -292,7 +273,7 @@ Portfolio risico:
 
 🎯 BLOK 7 — CONCLUSIE
 
-Het systeem staat momenteel niet in exit-modus.
+Het systeem staat momenteel niet automatisch in exit-modus.
 Coin-specifieke verkoop blijft geblokkeerd zolang multi-factor bevestiging ontbreekt.
 XRP blijft core-hold.
 CFG blijft beperkt door liquiditeitsrisico.
@@ -300,10 +281,8 @@ CFG blijft beperkt door liquiditeitsrisico.
 
 
 def build_highest_risk_answer(engine):
-    signals = engine.get("signals", {})
-
     ranked = sorted(
-        signals.items(),
+        engine.get("signals", {}).items(),
         key=lambda item: float(item[1].get("score", 0)),
         reverse=True
     )
@@ -370,10 +349,6 @@ def build_portfolio_answer(engine):
 
 def answer_question(question, engine):
     q = question.lower().strip()
-    signals = engine.get("signals", {})
-
-    if any(word in q for word in ["vandaag", "doen", "actie", "besluit", "moet ik"]):
-        return build_today_answer(engine)
 
     if any(word in q for word in ["portfolio", "portefeuille", "pnl", "waarde", "allocatie"]):
         return build_portfolio_answer(engine)
@@ -383,23 +358,17 @@ def answer_question(question, engine):
 
     for symbol in ["XRP", "ONDO", "AERO", "CFG"]:
         if symbol.lower() in q:
-            coin = signals.get(symbol)
+            coin = engine.get("signals", {}).get(symbol)
             if not coin:
                 return f"⚪ Geen data gevonden voor {symbol}."
             return format_coin_answer(symbol, coin)
-
-    if any(word in q for word in ["waarom", "verkopen", "sell", "exit"]):
-        return build_today_answer(engine)
 
     return build_today_answer(engine)
 
 
 @app.get("/health")
 async def health():
-    return {
-        "status": "ok",
-        "timestamp": now_iso()
-    }
+    return {"status": "ok", "timestamp": now_iso()}
 
 
 @app.get("/market/exit-snapshot")
@@ -442,11 +411,7 @@ async def alerts_status():
 async def alerts_test():
     message = f"✅ EXIT PLAN v10.1 test alert\nTime: {now_iso()}"
     result = await send_telegram(message)
-
-    return {
-        "test": "telegram",
-        "result": result
-    }
+    return {"test": "telegram", "result": result}
 
 
 @app.get("/chat/status")
@@ -463,7 +428,6 @@ async def chat_status():
 async def chat_ask(req: ChatRequest):
     snapshot = await build_exit_snapshot()
     engine = build_exit_engine(snapshot)
-
     answer = answer_question(req.question, engine)
 
     return {
@@ -485,95 +449,25 @@ async def chat_page():
     <title>EXIT PLAN v10.1 Chat</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-        body {
-            font-family: Arial, sans-serif;
-            background: #070b18;
-            color: #e5e7eb;
-            margin: 0;
-            padding: 20px;
-        }
-
-        h1 {
-            color: #ffffff;
-        }
-
-        .box {
-            max-width: 900px;
-            margin: auto;
-            background: #111827;
-            border: 1px solid #1f2937;
-            border-radius: 14px;
-            padding: 18px;
-        }
-
-        textarea {
-            width: 100%;
-            height: 90px;
-            background: #020617;
-            color: #e5e7eb;
-            border: 1px solid #334155;
-            border-radius: 10px;
-            padding: 12px;
-            font-size: 16px;
-            box-sizing: border-box;
-        }
-
-        button {
-            margin-top: 10px;
-            background: #2563eb;
-            color: white;
-            border: none;
-            padding: 11px 16px;
-            border-radius: 8px;
-            cursor: pointer;
-            font-weight: bold;
-        }
-
-        button:hover {
-            background: #1d4ed8;
-        }
-
-        pre {
-            white-space: pre-wrap;
-            background: #020617;
-            border: 1px solid #1f2937;
-            border-radius: 10px;
-            padding: 14px;
-            margin-top: 16px;
-            font-size: 15px;
-            line-height: 1.45;
-        }
-
-        .examples {
-            color: #9ca3af;
-            font-size: 14px;
-            margin-bottom: 12px;
-        }
-
-        .pill {
-            display: inline-block;
-            background: #020617;
-            border: 1px solid #334155;
-            border-radius: 999px;
-            padding: 5px 9px;
-            margin: 3px;
-            cursor: pointer;
-        }
+        body { font-family: Arial, sans-serif; background:#070b18; color:#e5e7eb; margin:0; padding:20px; }
+        .box { max-width:900px; margin:auto; background:#111827; border:1px solid #1f2937; border-radius:14px; padding:18px; }
+        textarea { width:100%; height:90px; background:#020617; color:#e5e7eb; border:1px solid #334155; border-radius:10px; padding:12px; font-size:16px; box-sizing:border-box; }
+        button, a { margin-top:10px; background:#2563eb; color:white; border:none; padding:11px 16px; border-radius:8px; cursor:pointer; font-weight:bold; text-decoration:none; display:inline-block; }
+        pre { white-space:pre-wrap; background:#020617; border:1px solid #1f2937; border-radius:10px; padding:14px; margin-top:16px; font-size:15px; line-height:1.45; }
+        .pill { display:inline-block; background:#020617; border:1px solid #334155; border-radius:999px; padding:5px 9px; margin:3px; cursor:pointer; }
     </style>
 </head>
 <body>
     <div class="box">
         <h1>EXIT PLAN v10.1 Chat</h1>
+        <a href="/">Terug naar dashboard</a>
+        <br><br>
 
-        <div class="examples">
-            Klik een voorbeeld of stel zelf een vraag:
-            <br>
-            <span class="pill" onclick="setQ('Wat moet ik vandaag doen?')">Wat moet ik vandaag doen?</span>
-            <span class="pill" onclick="setQ('Hoe staat ONDO ervoor?')">Hoe staat ONDO ervoor?</span>
-            <span class="pill" onclick="setQ('Welke coin heeft het hoogste risico?')">Hoogste risico?</span>
-            <span class="pill" onclick="setQ('Hoe staat mijn portfolio ervoor?')">Portfolio</span>
-            <span class="pill" onclick="setQ('Waarom verkoopt het systeem niet?')">Waarom geen verkoop?</span>
-        </div>
+        <span class="pill" onclick="setQ('Wat moet ik vandaag doen?')">Wat moet ik vandaag doen?</span>
+        <span class="pill" onclick="setQ('Hoe staat ONDO ervoor?')">ONDO</span>
+        <span class="pill" onclick="setQ('Hoe staat AERO ervoor?')">AERO</span>
+        <span class="pill" onclick="setQ('Welke coin heeft het hoogste risico?')">Hoogste risico</span>
+        <span class="pill" onclick="setQ('Hoe staat mijn portfolio ervoor?')">Portfolio</span>
 
         <textarea id="question">Wat moet ik vandaag doen?</textarea>
         <br>
@@ -622,115 +516,21 @@ async def dashboard():
     <title>EXIT PLAN v10.1 Dashboard</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-        body {
-            font-family: Arial, sans-serif;
-            background: #070b18;
-            color: #e5e7eb;
-            margin: 0;
-            padding: 20px;
-        }
-
-        h1, h2, h3 { color: #ffffff; }
-
-        .topbar {
-            display: flex;
-            flex-wrap: wrap;
-            align-items: center;
-            gap: 10px;
-            margin-bottom: 18px;
-        }
-
-        button, a.button {
-            background: #2563eb;
-            color: white;
-            border: none;
-            padding: 10px 14px;
-            border-radius: 8px;
-            cursor: pointer;
-            font-weight: bold;
-            text-decoration: none;
-            display: inline-block;
-        }
-
-        button:hover, a.button:hover { background: #1d4ed8; }
-
-        .grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-            gap: 16px;
-            margin-bottom: 22px;
-        }
-
-        .card {
-            background: #111827;
-            border: 1px solid #1f2937;
-            border-radius: 14px;
-            padding: 18px;
-            box-shadow: 0 10px 24px rgba(0,0,0,0.25);
-        }
-
-        .small { font-size: 13px; color: #9ca3af; }
-        .muted { color: #9ca3af; }
-        .metric { font-size: 28px; font-weight: bold; margin: 8px 0; }
-        .pill {
-            display: inline-block;
-            padding: 4px 9px;
-            border-radius: 999px;
-            background: #020617;
-            border: 1px solid #334155;
-            font-size: 13px;
-            margin: 2px;
-        }
-
-        .barwrap {
-            width: 100%;
-            background: #020617;
-            border: 1px solid #334155;
-            border-radius: 999px;
-            height: 16px;
-            overflow: hidden;
-            margin-top: 8px;
-        }
-
-        .bar {
-            height: 100%;
-            width: 0%;
-            background: linear-gradient(90deg, #22c55e, #facc15, #ef4444);
-            transition: width 0.4s ease;
-        }
-
-        .coin-title {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-
-        pre {
-            white-space: pre-wrap;
-            background: #020617;
-            padding: 14px;
-            border-radius: 10px;
-            overflow-x: auto;
-            border: 1px solid #1f2937;
-        }
-
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 14px;
-        }
-
-        td, th {
-            border-bottom: 1px solid #1f2937;
-            padding: 8px;
-            text-align: left;
-        }
-
-        .statusline {
-            color: #9ca3af;
-            font-size: 13px;
-            margin-bottom: 14px;
-        }
+        body { font-family: Arial, sans-serif; background:#070b18; color:#e5e7eb; margin:0; padding:20px; }
+        h1,h2,h3 { color:#fff; }
+        .topbar { display:flex; flex-wrap:wrap; gap:10px; margin-bottom:18px; }
+        button,a.button { background:#2563eb; color:white; border:none; padding:10px 14px; border-radius:8px; cursor:pointer; font-weight:bold; text-decoration:none; display:inline-block; }
+        .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:16px; margin-bottom:22px; }
+        .card { background:#111827; border:1px solid #1f2937; border-radius:14px; padding:18px; box-shadow:0 10px 24px rgba(0,0,0,.25); }
+        .metric { font-size:28px; font-weight:bold; margin:8px 0; }
+        .pill { display:inline-block; padding:4px 9px; border-radius:999px; background:#020617; border:1px solid #334155; font-size:13px; }
+        .barwrap { width:100%; background:#020617; border:1px solid #334155; border-radius:999px; height:16px; overflow:hidden; margin-top:8px; }
+        .bar { height:100%; width:0%; background:linear-gradient(90deg,#22c55e,#facc15,#ef4444); }
+        .coin-title { display:flex; justify-content:space-between; align-items:center; }
+        pre { white-space:pre-wrap; background:#020617; padding:14px; border-radius:10px; overflow-x:auto; border:1px solid #1f2937; }
+        .statusline { color:#9ca3af; font-size:13px; margin-bottom:14px; }
+        table { width:100%; border-collapse:collapse; }
+        td,th { border-bottom:1px solid #1f2937; padding:8px; text-align:left; }
     </style>
 </head>
 <body>
@@ -743,9 +543,7 @@ async def dashboard():
         <a class="button" href="/chat">Open Chat</a>
     </div>
 
-    <div class="statusline">
-        Laatste update: <span id="last_update">...</span>
-    </div>
+    <div class="statusline">Laatste update: <span id="last_update">...</span></div>
 
     <div class="grid">
         <div class="card">
@@ -780,6 +578,18 @@ async def dashboard():
         </div>
     </div>
 
+    <h2>Trigger Status</h2>
+    <div class="card">
+        <table>
+            <tr><th>Component</th><th>Waarde</th><th>Status</th></tr>
+            <tr><td>Macro/Cycle Risk</td><td id="trigger_macro_value">...</td><td id="trigger_macro_status">...</td></tr>
+            <tr><td>Market Structure</td><td id="trigger_structure_value">...</td><td id="trigger_structure_status">...</td></tr>
+            <tr><td>Portfolio Risk</td><td id="trigger_portfolio_value">...</td><td id="trigger_portfolio_status">...</td></tr>
+            <tr><td>Multi-category</td><td id="trigger_multi_value">...</td><td id="trigger_multi_status">...</td></tr>
+            <tr><td>Missing Data</td><td id="missing_data">...</td><td id="missing_status">...</td></tr>
+        </table>
+    </div>
+
     <h2>Coin Signals</h2>
     <div id="coins" class="grid"></div>
 
@@ -794,7 +604,8 @@ function pctBar(value) {
 
 function safe(obj, path, fallback = "...") {
     try {
-        return path.split(".").reduce((a, b) => a[b], obj) ?? fallback;
+        const value = path.split(".").reduce((a,b) => a && a[b], obj);
+        return value === undefined || value === null ? fallback : value;
     } catch {
         return fallback;
     }
@@ -810,8 +621,8 @@ async function loadData() {
     const portfolio = data.portfolio_intelligence || {};
     const risk = portfolio.portfolio_risk || {};
 
-    document.getElementById('global_action').innerText = data.global_action;
-    document.getElementById('exit_score').innerText = data.exit_zone_score;
+    document.getElementById('global_action').innerText = data.global_action || "...";
+    document.getElementById('exit_score').innerText = data.exit_zone_score ?? "...";
     document.getElementById('exit_bar').style.width = pctBar(data.exit_zone_score);
 
     document.getElementById('cycle_score').innerText = safe(sc, "cycle_intelligence.cycle_score");
@@ -824,10 +635,26 @@ async function loadData() {
     document.getElementById('fear_greed').innerText = safe(sc, "fear_greed.value") + " / " + safe(sc, "fear_greed.classification");
     document.getElementById('btc_dominance').innerText = safe(sc, "btc_dominance");
 
-    document.getElementById('portfolio_value').innerText = "$" + portfolio.total_portfolio_value;
-    document.getElementById('portfolio_pnl').innerText = "$" + portfolio.total_unrealized_pnl + " / " + portfolio.portfolio_pnl_pct + "%";
-    document.getElementById('portfolio_risk').innerText = risk.state;
-    document.getElementById('largest_position').innerText = risk.largest_position + " / " + risk.largest_position_pct + "%";
+    document.getElementById('portfolio_value').innerText = "$" + (portfolio.total_portfolio_value ?? "...");
+    document.getElementById('portfolio_pnl').innerText = "$" + (portfolio.total_unrealized_pnl ?? "...") + " / " + (portfolio.portfolio_pnl_pct ?? "...") + "%";
+    document.getElementById('portfolio_risk').innerText = risk.state ?? "...";
+    document.getElementById('largest_position').innerText = (risk.largest_position ?? "...") + " / " + (risk.largest_position_pct ?? "...") + "%";
+
+    document.getElementById('trigger_macro_value').innerText = sc.macro_cycle_risk_score ?? "...";
+    document.getElementById('trigger_macro_status').innerText = (sc.macro_cycle_risk_score || 0) >= 20 ? "risk active" : "geen groot risico";
+
+    document.getElementById('trigger_structure_value').innerText = sc.market_structure_score ?? "...";
+    document.getElementById('trigger_structure_status').innerText = (sc.market_structure_score || 0) >= 20 ? "bevestigd" : "niet bevestigd";
+
+    document.getElementById('trigger_portfolio_value').innerText = sc.portfolio_risk_score ?? "...";
+    document.getElementById('trigger_portfolio_status').innerText = (sc.portfolio_risk_score || 0) >= 15 ? "portfolio modifier actief" : "laag";
+
+    document.getElementById('trigger_multi_value').innerText = sc.multi_category_confirmed ?? "...";
+    document.getElementById('trigger_multi_status').innerText = sc.multi_category_confirmed ? "bevestigd" : "niet bevestigd";
+
+    const missing = data.missing_engine_data || [];
+    document.getElementById('missing_data').innerText = missing.length ? missing.join(", ") : "geen";
+    document.getElementById('missing_status').innerText = missing.length ? "⚪ incomplete" : "✅ compleet";
 
     const coinsDiv = document.getElementById('coins');
     coinsDiv.innerHTML = '';
@@ -837,37 +664,48 @@ async function loadData() {
         card.className = 'card';
 
         const adaptive = coin.adaptive_execution || {};
-        const portfolioPos = coin.portfolio_position || {};
+        const p = coin.portfolio_position || {};
 
         card.innerHTML = `
             <div class="coin-title">
                 <h2>${symbol}</h2>
                 <span class="pill">${coin.signal}</span>
             </div>
+
             <p><b>Score:</b> ${coin.score}</p>
-            <p><b>Sell %:</b> ${coin.sell_pct}</p>
-            <p><b>Sell qty today:</b> ${coin.sell_qty}</p>
-            <p><b>Execution:</b> ${coin.execution_type}</p>
-            <p><b>Slippage risk:</b> ${adaptive.slippage_risk || "..."}</p>
+            <p><b>Verkooppercentage:</b> ${coin.sell_pct}</p>
+            <p><b>Verkoophoeveelheid vandaag:</b> ${coin.sell_qty}</p>
+            <p><b>Doelhoeveelheid verkoop:</b> ${coin.target_total_sell_qty || 0}</p>
+            <p><b>Max dagelijkse hoeveelheid:</b> ${coin.max_daily_qty}</p>
+            <p><b>Uitvoering:</b> ${coin.execution_type}</p>
+            <p><b>Slippage risico:</b> ${adaptive.slippage_risk || "..."}</p>
+
             <hr>
-            <p><b>Portfolio value:</b> $${portfolioPos.market_value}</p>
-            <p><b>PnL:</b> ${portfolioPos.pnl_pct}%</p>
-            <p><b>Allocation:</b> ${portfolioPos.allocation_pct}%</p>
+
+            <p><b>Portfolio waarde:</b> $${p.market_value ?? "..."}</p>
+            <p><b>PnL:</b> ${p.pnl_pct ?? "..."}%</p>
+            <p><b>Allocatie:</b> ${p.allocation_pct ?? "..."}%</p>
+            <p><b>Risk state:</b> ${p.risk_state ?? "..."}</p>
+
             <hr>
+
             <p><b>Liquidity:</b> ${coin.liquidity}</p>
             <p><b>Trend:</b> ${coin.trend}</p>
             <p><b>Volatility:</b> ${coin.volatility}</p>
             <p><b>RSI:</b> ${coin.rsi_14d}</p>
             <p><b>ATR:</b> ${coin.atr_14d}</p>
+
+            <hr>
+
             <p><b>Confirmations:</b> ${(coin.confirmations || []).join(', ') || "none"}</p>
             <p><b>Blockers:</b> ${(coin.blockers || []).join(', ') || "none"}</p>
+            <p><b>Adaptive reasons:</b> ${(adaptive.reasons || []).join(', ') || "none"}</p>
         `;
 
         coinsDiv.appendChild(card);
     }
 
-    document.getElementById('raw').innerText =
-        JSON.stringify(data, null, 2);
+    document.getElementById('raw').innerText = JSON.stringify(data, null, 2);
 }
 
 async function scanMarket() {
