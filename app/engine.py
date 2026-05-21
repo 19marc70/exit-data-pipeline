@@ -7,19 +7,21 @@ PORTFOLIO = {
         "moonbag": 11093.5,
         "avg_entry": 0.9699,
     },
+
     "ONDO": {
-    "qty": 22397.63463725,
-    "sellable": 22397.63463725,
-    "moonbag": 1925.0,
-    "avg_entry": 0.5072,
-},
+        "qty": 22397.63463725,
+        "sellable": 22397.63463725,
+        "moonbag": 1925.0,
+        "avg_entry": 0.5018,
     },
+
     "AERO": {
         "qty": 10251.39604089,
         "sellable": 10251.39604089,
         "moonbag": 750.0,
         "avg_entry": 0.5379,
     },
+
     "CFG": {
         "qty": 10667.05368724,
         "sellable": 10667.05368724,
