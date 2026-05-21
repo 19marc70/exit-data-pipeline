@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import httpx
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
 
 from .sources import build_exit_snapshot
 from .engine import build_exit_engine
@@ -25,6 +26,10 @@ SCAN_INTERVAL_SECONDS = int(os.getenv("SCAN_INTERVAL_SECONDS", "1800"))
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
+
+class ChatRequest(BaseModel):
+    question: str
 
 
 def now_iso():
@@ -174,6 +179,221 @@ async def startup_event():
         asyncio.create_task(auto_scan_loop())
 
 
+def format_coin_answer(symbol, coin):
+    adaptive = coin.get("adaptive_execution", {})
+    portfolio = coin.get("portfolio_position", {})
+    derivatives = coin.get("derivatives", {})
+    der_state = derivatives.get("state", {})
+
+    return f"""
+🎯 {symbol}
+
+Status:
+{coin.get("signal")}
+
+Score:
+{coin.get("score")}
+
+Verkoop:
+{coin.get("sell_pct")}% / {coin.get("sell_qty")} vandaag
+
+Trend:
+{coin.get("trend")}
+
+Volatiliteit:
+{coin.get("volatility")}
+
+RSI:
+{coin.get("rsi_14d")}
+
+ATR:
+{coin.get("atr_14d")}
+
+Liquidity:
+{coin.get("liquidity")}
+
+Funding/leverage:
+{der_state.get("leverage_risk")}
+
+Portfolio:
+waarde ${portfolio.get("market_value")}
+PnL {portfolio.get("pnl_pct")}%
+allocatie {portfolio.get("allocation_pct")}%
+
+Execution:
+{coin.get("execution_type")}
+
+Slippage:
+{adaptive.get("slippage_risk")}
+
+Confirmations:
+{", ".join(coin.get("confirmations", [])) or "geen"}
+
+Blockers:
+{", ".join(coin.get("blockers", [])) or "geen"}
+""".strip()
+
+
+def build_today_answer(engine):
+    sc = engine.get("score_components", {})
+    portfolio = engine.get("portfolio_intelligence", {})
+    risk = portfolio.get("portfolio_risk", {})
+
+    return f"""
+📡 BLOK 1 — SNEL BESLUIT
+
+🚦 ACTIE:
+{engine.get("global_action")}
+
+🎯 REDEN:
+Exit Zone Score = {engine.get("exit_zone_score")}.
+Multi-category confirmed = {sc.get("multi_category_confirmed")}.
+Er is dus geen volledige exit zolang meerdere categorieën niet samen bevestigen.
+
+⏰ URGENTIE:
+Laag tot middelmatig.
+
+💧 EXECUTION:
+Geen verkoop tenzij een coin specifiek een SELL-signaal krijgt.
+
+📊 BLOK 2 — MARKT & SIGNALEN
+
+Cycle score:
+{sc.get("cycle_intelligence", {}).get("cycle_score")}
+
+Cycle state:
+{sc.get("cycle_intelligence", {}).get("cycle_state")}
+
+Macro score:
+{sc.get("macro_intelligence", {}).get("macro_score")}
+
+Macro state:
+{sc.get("macro_intelligence", {}).get("macro_state")}
+
+Fear & Greed:
+{sc.get("fear_greed", {}).get("value")} / {sc.get("fear_greed", {}).get("classification")}
+
+BTC dominance:
+{sc.get("btc_dominance")}
+
+💰 BLOK 5 — PORTFOLIO
+
+Totale waarde:
+${portfolio.get("total_portfolio_value")}
+
+Totale PnL:
+${portfolio.get("total_unrealized_pnl")} / {portfolio.get("portfolio_pnl_pct")}%
+
+Grootste positie:
+{risk.get("largest_position")} ({risk.get("largest_position_pct")}%)
+
+Portfolio risico:
+{risk.get("state")}
+
+🎯 BLOK 7 — CONCLUSIE
+
+Het systeem staat momenteel niet in exit-modus.
+Coin-specifieke verkoop blijft geblokkeerd zolang multi-factor bevestiging ontbreekt.
+XRP blijft core-hold.
+CFG blijft beperkt door liquiditeitsrisico.
+""".strip()
+
+
+def build_highest_risk_answer(engine):
+    signals = engine.get("signals", {})
+
+    ranked = sorted(
+        signals.items(),
+        key=lambda item: float(item[1].get("score", 0)),
+        reverse=True
+    )
+
+    if not ranked:
+        return "⚪ Geen coin-data beschikbaar."
+
+    symbol, coin = ranked[0]
+
+    return f"""
+🎯 Hoogste actuele coin-risico
+
+Coin:
+{symbol}
+
+Score:
+{coin.get("score")}
+
+Signaal:
+{coin.get("signal")}
+
+Redenen:
+- Trend: {coin.get("trend")}
+- Volatiliteit: {coin.get("volatility")}
+- Liquidity: {coin.get("liquidity")}
+- RSI: {coin.get("rsi_14d")}
+- Blockers: {", ".join(coin.get("blockers", [])) or "geen"}
+
+Verkoop:
+{coin.get("sell_pct")}% / {coin.get("sell_qty")}
+
+Conclusie:
+{symbol} heeft nu de hoogste risicoscore, maar verkoop gebeurt alleen als adaptive execution en multi-factor confirmation dit toestaan.
+""".strip()
+
+
+def build_portfolio_answer(engine):
+    p = engine.get("portfolio_intelligence", {})
+    risk = p.get("portfolio_risk", {})
+    positions = p.get("positions", {})
+
+    lines = [
+        "💰 PORTFOLIO INTELLIGENCE",
+        "",
+        f"Totaalwaarde: ${p.get('total_portfolio_value')}",
+        f"Cost basis: ${p.get('total_cost_basis')}",
+        f"Ongerealiseerde PnL: ${p.get('total_unrealized_pnl')}",
+        f"Portfolio PnL: {p.get('portfolio_pnl_pct')}%",
+        "",
+        f"Grootste positie: {risk.get('largest_position')} ({risk.get('largest_position_pct')}%)",
+        f"Risico: {risk.get('state')}",
+        ""
+    ]
+
+    for symbol, pos in positions.items():
+        lines.append(
+            f"{symbol}: waarde ${pos.get('market_value')} | "
+            f"PnL {pos.get('pnl_pct')}% | allocatie {pos.get('allocation_pct')}% | "
+            f"risico {pos.get('risk_state')}"
+        )
+
+    return "\n".join(lines)
+
+
+def answer_question(question, engine):
+    q = question.lower().strip()
+    signals = engine.get("signals", {})
+
+    if any(word in q for word in ["vandaag", "doen", "actie", "besluit", "moet ik"]):
+        return build_today_answer(engine)
+
+    if any(word in q for word in ["portfolio", "portefeuille", "pnl", "waarde", "allocatie"]):
+        return build_portfolio_answer(engine)
+
+    if any(word in q for word in ["hoogste risico", "meeste risico", "gevaarlijkste", "zwakste"]):
+        return build_highest_risk_answer(engine)
+
+    for symbol in ["XRP", "ONDO", "AERO", "CFG"]:
+        if symbol.lower() in q:
+            coin = signals.get(symbol)
+            if not coin:
+                return f"⚪ Geen data gevonden voor {symbol}."
+            return format_coin_answer(symbol, coin)
+
+    if any(word in q for word in ["waarom", "verkopen", "sell", "exit"]):
+        return build_today_answer(engine)
+
+    return build_today_answer(engine)
+
+
 @app.get("/health")
 async def health():
     return {
@@ -229,6 +449,170 @@ async def alerts_test():
     }
 
 
+@app.get("/chat/status")
+async def chat_status():
+    return {
+        "chat_layer": "active",
+        "source": "/market/exit-engine",
+        "mode": "rule_based_conversational_engine",
+        "timestamp": now_iso()
+    }
+
+
+@app.post("/chat/ask")
+async def chat_ask(req: ChatRequest):
+    snapshot = await build_exit_snapshot()
+    engine = build_exit_engine(snapshot)
+
+    answer = answer_question(req.question, engine)
+
+    return {
+        "question": req.question,
+        "answer": answer,
+        "engine_version": engine.get("engine_version"),
+        "global_action": engine.get("global_action"),
+        "exit_zone_score": engine.get("exit_zone_score"),
+        "timestamp": now_iso()
+    }
+
+
+@app.get("/chat", response_class=HTMLResponse)
+async def chat_page():
+    return """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>EXIT PLAN v10.1 Chat</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #070b18;
+            color: #e5e7eb;
+            margin: 0;
+            padding: 20px;
+        }
+
+        h1 {
+            color: #ffffff;
+        }
+
+        .box {
+            max-width: 900px;
+            margin: auto;
+            background: #111827;
+            border: 1px solid #1f2937;
+            border-radius: 14px;
+            padding: 18px;
+        }
+
+        textarea {
+            width: 100%;
+            height: 90px;
+            background: #020617;
+            color: #e5e7eb;
+            border: 1px solid #334155;
+            border-radius: 10px;
+            padding: 12px;
+            font-size: 16px;
+            box-sizing: border-box;
+        }
+
+        button {
+            margin-top: 10px;
+            background: #2563eb;
+            color: white;
+            border: none;
+            padding: 11px 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+
+        button:hover {
+            background: #1d4ed8;
+        }
+
+        pre {
+            white-space: pre-wrap;
+            background: #020617;
+            border: 1px solid #1f2937;
+            border-radius: 10px;
+            padding: 14px;
+            margin-top: 16px;
+            font-size: 15px;
+            line-height: 1.45;
+        }
+
+        .examples {
+            color: #9ca3af;
+            font-size: 14px;
+            margin-bottom: 12px;
+        }
+
+        .pill {
+            display: inline-block;
+            background: #020617;
+            border: 1px solid #334155;
+            border-radius: 999px;
+            padding: 5px 9px;
+            margin: 3px;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+    <div class="box">
+        <h1>EXIT PLAN v10.1 Chat</h1>
+
+        <div class="examples">
+            Klik een voorbeeld of stel zelf een vraag:
+            <br>
+            <span class="pill" onclick="setQ('Wat moet ik vandaag doen?')">Wat moet ik vandaag doen?</span>
+            <span class="pill" onclick="setQ('Hoe staat ONDO ervoor?')">Hoe staat ONDO ervoor?</span>
+            <span class="pill" onclick="setQ('Welke coin heeft het hoogste risico?')">Hoogste risico?</span>
+            <span class="pill" onclick="setQ('Hoe staat mijn portfolio ervoor?')">Portfolio</span>
+            <span class="pill" onclick="setQ('Waarom verkoopt het systeem niet?')">Waarom geen verkoop?</span>
+        </div>
+
+        <textarea id="question">Wat moet ik vandaag doen?</textarea>
+        <br>
+        <button onclick="ask()">Vraag aan EXIT PLAN</button>
+
+        <pre id="answer">Antwoord verschijnt hier...</pre>
+    </div>
+
+<script>
+function setQ(text) {
+    document.getElementById("question").value = text;
+}
+
+async function ask() {
+    const question = document.getElementById("question").value;
+    document.getElementById("answer").innerText = "Engine wordt geraadpleegd...";
+
+    const res = await fetch("/chat/ask", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({question})
+    });
+
+    const data = await res.json();
+
+    document.getElementById("answer").innerText =
+        data.answer +
+        "\\n\\n---\\n" +
+        "Engine: " + data.engine_version + "\\n" +
+        "Global action: " + data.global_action + "\\n" +
+        "Exit zone score: " + data.exit_zone_score + "\\n" +
+        "Timestamp: " + data.timestamp;
+}
+</script>
+</body>
+</html>
+"""
+
+
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
     return """
@@ -246,9 +630,7 @@ async def dashboard():
             padding: 20px;
         }
 
-        h1, h2, h3 {
-            color: #ffffff;
-        }
+        h1, h2, h3 { color: #ffffff; }
 
         .topbar {
             display: flex;
@@ -258,7 +640,7 @@ async def dashboard():
             margin-bottom: 18px;
         }
 
-        button {
+        button, a.button {
             background: #2563eb;
             color: white;
             border: none;
@@ -266,11 +648,11 @@ async def dashboard():
             border-radius: 8px;
             cursor: pointer;
             font-weight: bold;
+            text-decoration: none;
+            display: inline-block;
         }
 
-        button:hover {
-            background: #1d4ed8;
-        }
+        button:hover, a.button:hover { background: #1d4ed8; }
 
         .grid {
             display: grid;
@@ -287,41 +669,9 @@ async def dashboard():
             box-shadow: 0 10px 24px rgba(0,0,0,0.25);
         }
 
-        .small {
-            font-size: 13px;
-            color: #9ca3af;
-        }
-
-        .muted {
-            color: #9ca3af;
-        }
-
-        .good {
-            color: #22c55e;
-            font-weight: bold;
-        }
-
-        .warn {
-            color: #facc15;
-            font-weight: bold;
-        }
-
-        .bad {
-            color: #ef4444;
-            font-weight: bold;
-        }
-
-        .neutral {
-            color: #93c5fd;
-            font-weight: bold;
-        }
-
-        .metric {
-            font-size: 28px;
-            font-weight: bold;
-            margin: 8px 0;
-        }
-
+        .small { font-size: 13px; color: #9ca3af; }
+        .muted { color: #9ca3af; }
+        .metric { font-size: 28px; font-weight: bold; margin: 8px 0; }
         .pill {
             display: inline-block;
             padding: 4px 9px;
@@ -390,6 +740,7 @@ async def dashboard():
         <button onclick="loadData()">Refresh</button>
         <button onclick="scanMarket()">Run Scan</button>
         <button onclick="testTelegram()">Telegram Test</button>
+        <a class="button" href="/chat">Open Chat</a>
     </div>
 
     <div class="statusline">
@@ -399,10 +750,9 @@ async def dashboard():
     <div class="grid">
         <div class="card">
             <h2>Global Action</h2>
-            <div id="global_action" class="metric warn">Loading...</div>
-            <p>Exit Zone Score: <span id="exit_score" class="neutral">...</span></p>
+            <div id="global_action" class="metric">Loading...</div>
+            <p>Exit Zone Score: <span id="exit_score">...</span></p>
             <div class="barwrap"><div id="exit_bar" class="bar"></div></div>
-            <p class="small">Hoe hoger de score, hoe dichter bij distributie / exit-zone.</p>
         </div>
 
         <div class="card">
@@ -422,88 +772,21 @@ async def dashboard():
         </div>
 
         <div class="card">
-            <h2>Execution Engine</h2>
-            <p>Type: <span id="execution_type">...</span></p>
-            <p>ATR sizing: <span id="atr_sizing">...</span></p>
-            <p>Volatility sizing: <span id="vol_sizing">...</span></p>
-            <p>Slippage guard: <span id="slippage_guard">...</span></p>
+            <h2>Portfolio</h2>
+            <p>Total value: <span id="portfolio_value">...</span></p>
+            <p>Total PnL: <span id="portfolio_pnl">...</span></p>
+            <p>Risk: <span id="portfolio_risk">...</span></p>
+            <p>Largest: <span id="largest_position">...</span></p>
         </div>
-
-        <div class="card">
-            <h2>Automation</h2>
-            <p>Auto scan: <span id="auto_scan">...</span></p>
-            <p>Interval: <span id="scan_interval">...</span> sec</p>
-            <p>Last scan: <span id="last_scan">...</span></p>
-            <p id="scan_result" class="muted">No scan yet.</p>
-        </div>
-
-        <div class="card">
-            <h2>Guardrails</h2>
-            <p>XRP sell allowed: <span id="xrp_guard">...</span></p>
-            <p>Moonbags sell allowed: <span id="moonbag_guard">...</span></p>
-            <p>Single indicator exits: <span id="single_guard">...</span></p>
-            <p>Full exit without confirmation: <span id="full_guard">...</span></p>
-        </div>
-    </div>
-
-    <h2>Trigger Status</h2>
-    <div class="card">
-        <table>
-            <tr>
-                <th>Component</th>
-                <th>Value</th>
-                <th>Status</th>
-            </tr>
-            <tr>
-                <td>Macro/Cycle Risk</td>
-                <td id="trigger_macro_value">...</td>
-                <td id="trigger_macro_status">...</td>
-            </tr>
-            <tr>
-                <td>Market Structure</td>
-                <td id="trigger_structure_value">...</td>
-                <td id="trigger_structure_status">...</td>
-            </tr>
-            <tr>
-                <td>Multi-category confirmation</td>
-                <td id="trigger_multi_value">...</td>
-                <td id="trigger_multi_status">...</td>
-            </tr>
-            <tr>
-                <td>Missing Engine Data</td>
-                <td id="missing_data">...</td>
-                <td id="missing_status">...</td>
-            </tr>
-        </table>
     </div>
 
     <h2>Coin Signals</h2>
     <div id="coins" class="grid"></div>
 
-    <h2>Macro Components</h2>
-    <div id="macro_components" class="grid"></div>
-
-    <h2>Allocation Plan</h2>
-    <pre id="allocation"></pre>
-
-    <h2>Re-entry Engine</h2>
-    <pre id="reentry"></pre>
-
     <h2>Raw Engine Output</h2>
     <pre id="raw"></pre>
 
 <script>
-function clsByRisk(value) {
-    if (value >= 60) return "bad";
-    if (value >= 30) return "warn";
-    if (value <= -10) return "good";
-    return "neutral";
-}
-
-function boolText(value) {
-    return value ? "true" : "false";
-}
-
 function pctBar(value) {
     const v = Math.max(0, Math.min(100, Number(value || 0)));
     return v + "%";
@@ -524,8 +807,8 @@ async function loadData() {
     document.getElementById('last_update').innerText = new Date().toLocaleString();
 
     const sc = data.score_components || {};
-    const exec = data.execution_engine || {};
-    const guards = data.guardrails || {};
+    const portfolio = data.portfolio_intelligence || {};
+    const risk = portfolio.portfolio_risk || {};
 
     document.getElementById('global_action').innerText = data.global_action;
     document.getElementById('exit_score').innerText = data.exit_zone_score;
@@ -541,31 +824,10 @@ async function loadData() {
     document.getElementById('fear_greed').innerText = safe(sc, "fear_greed.value") + " / " + safe(sc, "fear_greed.classification");
     document.getElementById('btc_dominance').innerText = safe(sc, "btc_dominance");
 
-    document.getElementById('execution_type').innerText = exec.execution_type;
-    document.getElementById('atr_sizing').innerText = boolText(exec.atr_adjusted_sizing);
-    document.getElementById('vol_sizing').innerText = boolText(exec.volatility_adjusted_sizing);
-    document.getElementById('slippage_guard').innerText = boolText(exec.no_trade_if_expected_slippage_above_5pct);
-
-    document.getElementById('xrp_guard').innerText = boolText(guards.xrp_sell_allowed);
-    document.getElementById('moonbag_guard').innerText = boolText(guards.moonbags_sell_allowed);
-    document.getElementById('single_guard').innerText = boolText(guards.single_indicator_exit_allowed);
-    document.getElementById('full_guard').innerText = boolText(guards.full_exit_allowed_without_multi_category_confirmation);
-
-    document.getElementById('trigger_macro_value').innerText = sc.macro_cycle_risk_score;
-    document.getElementById('trigger_macro_status').innerText =
-        sc.macro_cycle_risk_score >= 20 ? "risk active" : "no major risk";
-
-    document.getElementById('trigger_structure_value').innerText = sc.market_structure_score;
-    document.getElementById('trigger_structure_status').innerText =
-        sc.market_structure_score >= 20 ? "structure risk" : "not confirmed";
-
-    document.getElementById('trigger_multi_value').innerText = sc.multi_category_confirmed;
-    document.getElementById('trigger_multi_status').innerText =
-        sc.multi_category_confirmed ? "confirmed" : "not confirmed";
-
-    const missing = data.missing_engine_data || [];
-    document.getElementById('missing_data').innerText = missing.length ? missing.join(", ") : "none";
-    document.getElementById('missing_status').innerText = missing.length ? "⚪ incomplete" : "✅ complete";
+    document.getElementById('portfolio_value').innerText = "$" + portfolio.total_portfolio_value;
+    document.getElementById('portfolio_pnl').innerText = "$" + portfolio.total_unrealized_pnl + " / " + portfolio.portfolio_pnl_pct + "%";
+    document.getElementById('portfolio_risk').innerText = risk.state;
+    document.getElementById('largest_position').innerText = risk.largest_position + " / " + risk.largest_position_pct + "%";
 
     const coinsDiv = document.getElementById('coins');
     coinsDiv.innerHTML = '';
@@ -575,7 +837,7 @@ async function loadData() {
         card.className = 'card';
 
         const adaptive = coin.adaptive_execution || {};
-        const multipliers = adaptive.multipliers || {};
+        const portfolioPos = coin.portfolio_position || {};
 
         card.innerHTML = `
             <div class="coin-title">
@@ -585,89 +847,40 @@ async function loadData() {
             <p><b>Score:</b> ${coin.score}</p>
             <p><b>Sell %:</b> ${coin.sell_pct}</p>
             <p><b>Sell qty today:</b> ${coin.sell_qty}</p>
-            <p><b>Target total sell qty:</b> ${coin.target_total_sell_qty || 0}</p>
-            <p><b>Max daily qty:</b> ${coin.max_daily_qty}</p>
             <p><b>Execution:</b> ${coin.execution_type}</p>
             <p><b>Slippage risk:</b> ${adaptive.slippage_risk || "..."}</p>
+            <hr>
+            <p><b>Portfolio value:</b> $${portfolioPos.market_value}</p>
+            <p><b>PnL:</b> ${portfolioPos.pnl_pct}%</p>
+            <p><b>Allocation:</b> ${portfolioPos.allocation_pct}%</p>
             <hr>
             <p><b>Liquidity:</b> ${coin.liquidity}</p>
             <p><b>Trend:</b> ${coin.trend}</p>
             <p><b>Volatility:</b> ${coin.volatility}</p>
             <p><b>RSI:</b> ${coin.rsi_14d}</p>
             <p><b>ATR:</b> ${coin.atr_14d}</p>
-            <hr>
-            <p><b>Multipliers:</b></p>
-            <p class="small">
-                liquidity ${multipliers.liquidity ?? "..."} |
-                volatility ${multipliers.volatility ?? "..."} |
-                ATR ${multipliers.atr ?? "..."} |
-                size ${multipliers.position_size ?? "..."}
-            </p>
             <p><b>Confirmations:</b> ${(coin.confirmations || []).join(', ') || "none"}</p>
             <p><b>Blockers:</b> ${(coin.blockers || []).join(', ') || "none"}</p>
-            <p><b>Adaptive reasons:</b> ${(adaptive.reasons || []).join(', ') || "none"}</p>
         `;
 
         coinsDiv.appendChild(card);
     }
 
-    const macroDiv = document.getElementById('macro_components');
-    macroDiv.innerHTML = '';
-
-    const macroSignals = safe(sc, "macro_intelligence.signals", {});
-    for (const [name, item] of Object.entries(macroSignals || {})) {
-        const card = document.createElement('div');
-        card.className = 'card';
-
-        card.innerHTML = `
-            <h3>${name}</h3>
-            <p><b>Available:</b> ${item.available}</p>
-            <p><b>Value:</b> ${item.value}</p>
-            <p><b>State:</b> ${item.state}</p>
-            <p><b>Score:</b> ${item.score}</p>
-            <p><b>Reason:</b> ${item.reason}</p>
-        `;
-
-        macroDiv.appendChild(card);
-    }
-
-    document.getElementById('allocation').innerText =
-        JSON.stringify(data.allocation_plan || {}, null, 2);
-
-    document.getElementById('reentry').innerText =
-        JSON.stringify(data.reentry_engine || {}, null, 2);
-
     document.getElementById('raw').innerText =
         JSON.stringify(data, null, 2);
-
-    loadAutomation();
 }
 
 async function scanMarket() {
     const res = await fetch('/market/scan');
     const data = await res.json();
-
-    document.getElementById('scan_result').innerText =
-        JSON.stringify(data.alert_result, null, 2);
-
+    alert(JSON.stringify(data.alert_result, null, 2));
     loadData();
 }
 
 async function testTelegram() {
     const res = await fetch('/alerts/test');
     const data = await res.json();
-
-    document.getElementById('scan_result').innerText =
-        JSON.stringify(data, null, 2);
-}
-
-async function loadAutomation() {
-    const res = await fetch('/automation/status');
-    const data = await res.json();
-
-    document.getElementById('auto_scan').innerText = data.auto_scan_enabled;
-    document.getElementById('scan_interval').innerText = data.scan_interval_seconds;
-    document.getElementById('last_scan').innerText = data.last_scan_ts;
+    alert(JSON.stringify(data, null, 2));
 }
 
 loadData();
