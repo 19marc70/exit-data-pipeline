@@ -1,4 +1,4 @@
-ENGINE_VERSION = "2.2-phase-22-portfolio-intelligence-engine"
+ENGINE_VERSION = "2.4-phase-24-score-intelligence-layer"
 
 PORTFOLIO = {
     "XRP": {
@@ -49,6 +49,275 @@ def safe_float(value, default=0.0):
 
 def text_contains(value, word):
     return word.lower() in str(value).lower()
+
+
+def interpret_score(category, value):
+    if value is None:
+        return {
+            "label": "⚪ unknown",
+            "meaning": "geen data beschikbaar",
+            "details": ["⚪ onvoldoende data"]
+        }
+
+    value = safe_float(value)
+
+    rules = {
+        "exit_zone": [
+            (-999, 20, "🟢 Accumulatiezone", [
+                "⚪ markt vroeg in cyclus",
+                "⚪ geen agressieve verkoop nodig",
+                "⚪ geen bevestigde distributiefase"
+            ]),
+            (20, 40, "🟡 Vroege bullfase", [
+                "⚪ opbouwfase",
+                "⚪ nog geen sterke distributie",
+                "⚪ monitoren"
+            ]),
+            (40, 60, "🟠 Verhoogde distributiekans", [
+                "⚪ voorzichtig worden",
+                "⚪ gedeeltelijke winstneming mogelijk",
+                "⚪ extra bevestiging nodig"
+            ]),
+            (60, 80, "🔴 Exit-zone dichtbij", [
+                "⚪ hogere kans op topvorming",
+                "⚪ gedeeltelijke verkoop overwegen",
+                "⚪ execution-limits respecteren"
+            ]),
+            (80, 999, "🚨 Historische topzone", [
+                "⚪ euforie",
+                "⚪ grote distributierisico's",
+                "⚪ alleen verkopen binnen liquidity guardrails"
+            ]),
+        ],
+        "cycle": [
+            (-999, 0, "🟢 Accumulatie / onderwaardering", [
+                "⚪ historisch goedkoop",
+                "⚪ geen top-signalen"
+            ]),
+            (0, 20, "🟡 Neutrale fase", [
+                "⚪ zeer vroeg / neutraal",
+                "⚪ geen top-signalen",
+                "⚪ geen distributiefase",
+                "⚪ geen reden voor agressieve verkopen"
+            ]),
+            (20, 40, "🟡 Bullmarkt bouwt op", [
+                "⚪ momentum neemt toe",
+                "⚪ nog geen exit-zone"
+            ]),
+            (40, 60, "🟠 Verhoogde distributiekans", [
+                "⚪ markt wordt warmer",
+                "⚪ voorzichtig worden"
+            ]),
+            (60, 80, "🔴 Exit-zone", [
+                "⚪ risico stijgt",
+                "⚪ gedeeltelijke exits mogelijk"
+            ]),
+            (80, 999, "🚨 Hoge euforie / top-risico", [
+                "⚪ historisch oververhit",
+                "⚪ top-risico hoog"
+            ]),
+        ],
+        "macro": [
+            (-999, -20, "🟢 Macro positief", [
+                "⚪ ondersteunende omgeving",
+                "⚪ geen macro-exitdruk"
+            ]),
+            (-20, 20, "🟡 Macro neutraal", [
+                "⚪ geen duidelijke richting",
+                "⚪ wachten op bevestiging"
+            ]),
+            (20, 40, "🟠 Macro waarschuwing", [
+                "⚪ macro-risico stijgt",
+                "⚪ voorzichtig worden"
+            ]),
+            (40, 60, "🔴 Hoog macro-risico", [
+                "⚪ beschermingsmodus",
+                "⚪ exits voorbereiden"
+            ]),
+            (60, 999, "🚨 Extreem macro-risico", [
+                "⚪ agressieve defensie",
+                "⚪ multi-factor exit waarschijnlijk"
+            ]),
+        ],
+        "fear": [
+            (0, 25, "🟢 Extreme Fear", [
+                "⚪ historisch vaak accumulatie",
+                "⚪ geen euforie"
+            ]),
+            (25, 45, "🟡 Fear", [
+                "⚪ voorzichtig sentiment",
+                "⚪ geen top-euforie"
+            ]),
+            (45, 55, "⚪ Neutral", [
+                "⚪ geen duidelijke richting"
+            ]),
+            (55, 75, "🟠 Greed", [
+                "⚪ risico neemt toe",
+                "⚪ monitoren"
+            ]),
+            (75, 101, "🔴 Extreme Greed", [
+                "⚪ euforie",
+                "⚪ top-risico stijgt"
+            ]),
+        ],
+        "coin": [
+            (-999, 0, "🟢 Accumulatie / laag risico", [
+                "⚪ geen sell-druk vanuit score",
+                "⚪ meestal HOLD"
+            ]),
+            (0, 20, "🟡 Hold / normaal risico", [
+                "⚪ normaal gedrag",
+                "⚪ geen directe exit"
+            ]),
+            (20, 40, "🟠 Voorzichtig", [
+                "⚪ opletten",
+                "⚪ extra bevestiging nodig"
+            ]),
+            (40, 60, "🔴 Gedeeltelijke verkoopzone", [
+                "⚪ distributie mogelijk",
+                "⚪ alleen bij multi-factor bevestiging"
+            ]),
+            (60, 999, "🚨 Sterke verkoopzone", [
+                "⚪ hoog risico",
+                "⚪ adaptive sell mogelijk"
+            ]),
+        ],
+        "portfolio_risk": [
+            (0, 15, "🟢 Laag portfolio-risico", [
+                "⚪ concentratie beperkt",
+                "⚪ drawdown beheersbaar"
+            ]),
+            (15, 30, "🟡 Medium portfolio-risico", [
+                "⚪ concentratie of drawdown aanwezig",
+                "⚪ extra voorzichtig met sizing"
+            ]),
+            (30, 999, "🔴 Hoog portfolio-risico", [
+                "⚪ concentratie/drawdown hoog",
+                "⚪ portfolio modifier actief"
+            ]),
+        ],
+        "rsi": [
+            (0, 30, "🟢 Oversold", [
+                "⚪ mogelijk uitgeputte verkoopdruk",
+                "⚪ geen automatische exit"
+            ]),
+            (30, 70, "🟡 Normaal", [
+                "⚪ geen extreme RSI",
+                "⚪ neutraal"
+            ]),
+            (70, 80, "🟠 Overbought", [
+                "⚪ momentum heet",
+                "⚪ monitoren"
+            ]),
+            (80, 101, "🔴 Extreme overbought", [
+                "⚪ euforie mogelijk",
+                "⚪ exit-bevestiging zoeken"
+            ]),
+        ],
+    }
+
+    if category not in rules:
+        return {
+            "label": "⚪ unknown",
+            "meaning": "geen interpretatie beschikbaar",
+            "details": ["⚪ categorie onbekend"]
+        }
+
+    for low, high, label, details in rules[category]:
+        if low <= value < high:
+            return {
+                "label": label,
+                "meaning": label,
+                "details": details
+            }
+
+    return {
+        "label": "⚪ unknown",
+        "meaning": "buiten bereik",
+        "details": ["⚪ waarde buiten interpretatiebereik"]
+    }
+
+
+def interpret_state(category, value):
+    text = str(value)
+
+    if category == "cycle_state":
+        if "ACCUMULATION" in text:
+            return {
+                "label": "🟢 ACCUMULATION_SUPPORT",
+                "meaning": "historisch goedkoop / ondersteunend",
+                "details": ["⚪ geen topfase", "⚪ gunstig voor vasthouden of heraccumulatie"]
+            }
+        if "NEUTRAL" in text:
+            return {
+                "label": "🟡 NEUTRAL_CYCLE",
+                "meaning": "geen duidelijke richting",
+                "details": ["⚪ geen top-signalen", "⚪ geen distributiefase"]
+            }
+        if "LATE" in text or "DISTRIBUTION" in text:
+            return {
+                "label": "🟠 LATE_CYCLE / EARLY_DISTRIBUTION",
+                "meaning": "voorzichtig worden",
+                "details": ["⚪ distributierisico stijgt", "⚪ bevestiging nodig"]
+            }
+        if "TOP" in text or "EXIT" in text or "EUPHORIA" in text:
+            return {
+                "label": "🔴 TOP / EXIT_ZONE",
+                "meaning": "grote exitfase of euforie",
+                "details": ["⚪ top-risico hoog", "⚪ staged exits mogelijk"]
+            }
+
+    if category == "liquidity":
+        if "strong" in text.lower():
+            return {
+                "label": "🟢 strong",
+                "meaning": "goede uitvoerbaarheid",
+                "details": ["⚪ lagere slippage", "⚪ max dagelijkse verkoop hoger"]
+            }
+        if "moderate" in text.lower():
+            return {
+                "label": "🟡 moderate",
+                "meaning": "voorzichtig uitvoeren",
+                "details": ["⚪ ladder execution", "⚪ max 10% per dag"]
+            }
+        if "severe" in text.lower():
+            return {
+                "label": "🔴 severe",
+                "meaning": "zeer slechte liquiditeit",
+                "details": ["⚪ verkoop kan prijs bewegen", "⚪ geen agressieve exits", "⚪ slippage >5% blokkeren"]
+            }
+
+    if category == "volatility":
+        if "low" in text.lower():
+            return {
+                "label": "🟢 low",
+                "meaning": "rustige markt",
+                "details": ["⚪ execution makkelijker", "⚪ minder ATR-risico"]
+            }
+        if "medium" in text.lower():
+            return {
+                "label": "🟡 medium",
+                "meaning": "normale schommelingen",
+                "details": ["⚪ standaard voorzichtigheid"]
+            }
+        if "elevated" in text.lower():
+            return {
+                "label": "🟠 elevated",
+                "meaning": "verhoogde volatiliteit",
+                "details": ["⚪ kleinere verkoopblokken", "⚪ adaptive sell verlaagt sizing"]
+            }
+        if "high" in text.lower():
+            return {
+                "label": "🔴 high",
+                "meaning": "hoge volatiliteit",
+                "details": ["⚪ execution risk hoog", "⚪ agressieve verkoop vermijden"]
+            }
+
+    return {
+        "label": str(value),
+        "meaning": "geen aanvullende interpretatie",
+        "details": []
+    }
 
 
 def classify_liquidity(symbol, coin):
@@ -612,6 +881,53 @@ def build_reentry_engine(snapshot, global_action):
     return result
 
 
+def build_score_interpretation(engine):
+    sc = engine.get("score_components", {})
+    cycle = sc.get("cycle_intelligence", {}) or {}
+    macro = sc.get("macro_intelligence", {}) or {}
+    fear = sc.get("fear_greed", {}) or {}
+    portfolio_risk = engine.get("portfolio_intelligence", {}).get("portfolio_risk", {}) or {}
+
+    return {
+        "exit_zone": interpret_score("exit_zone", engine.get("exit_zone_score")),
+        "cycle_score": interpret_score("cycle", cycle.get("cycle_score")),
+        "cycle_state": interpret_state("cycle_state", cycle.get("cycle_state")),
+        "macro_score": interpret_score("macro", macro.get("macro_score")),
+        "fear_greed": interpret_score("fear", fear.get("value")),
+        "portfolio_risk": interpret_score("portfolio_risk", portfolio_risk.get("portfolio_risk_score")),
+        "legend": {
+            "exit_zone_score": [
+                {"range": "<20", "meaning": "🟢 Accumulatiezone / geen agressieve verkoop"},
+                {"range": "20–40", "meaning": "🟡 Vroege bullfase"},
+                {"range": "40–60", "meaning": "🟠 Verhoogde distributiekans"},
+                {"range": "60–80", "meaning": "🔴 Exit-zone dichtbij"},
+                {"range": ">80", "meaning": "🚨 Historische topzone"}
+            ],
+            "cycle_score": [
+                {"range": "<0", "meaning": "Accumulatie / onderwaardering"},
+                {"range": "0–20", "meaning": "Neutrale fase"},
+                {"range": "20–40", "meaning": "Bullmarkt bouwt op"},
+                {"range": "40–60", "meaning": "Verhoogde distributiekans"},
+                {"range": "60–80", "meaning": "Exit-zone nadert"},
+                {"range": ">80", "meaning": "Hoge euforie / top-risico"}
+            ],
+            "coin_score": [
+                {"range": "<0", "meaning": "Accumulatie / laag risico"},
+                {"range": "0–20", "meaning": "Hold / normaal risico"},
+                {"range": "20–40", "meaning": "Voorzichtig"},
+                {"range": "40–60", "meaning": "Gedeeltelijke verkoopzone"},
+                {"range": ">60", "meaning": "Sterke verkoopzone"}
+            ],
+            "rsi": [
+                {"range": "<30", "meaning": "Oversold"},
+                {"range": "30–70", "meaning": "Normaal"},
+                {"range": "70–80", "meaning": "Overbought"},
+                {"range": ">80", "meaning": "Extreme overbought"}
+            ]
+        }
+    }
+
+
 def build_exit_engine(snapshot):
     coins = snapshot.get("coins", {})
     missing = list(snapshot.get("missing_data", []))
@@ -706,7 +1022,21 @@ def build_exit_engine(snapshot):
             "sell_qty": 0.0,
             "max_daily_qty": 0.0 if symbol == "XRP" else max_daily_qty,
             "execution_type": "limit_or_ladder_only",
-            "adaptive_execution": {}
+            "adaptive_execution": {},
+            "score_breakdown": {
+                "market_structure_score": structure_score,
+                "market_structure_reasons": structure_reasons,
+                "derivatives_score": derivatives_score,
+                "derivatives_reasons": derivatives_reasons,
+                "raw_coin_risk": coin_risk,
+                "macro_cycle_score_applied": macro_cycle_score
+            },
+            "interpretations": {
+                "coin_score": interpret_score("coin", round(raw_score, 2)),
+                "rsi": interpret_score("rsi", coin.get("rsi_14d")),
+                "liquidity": interpret_state("liquidity", liquidity),
+                "volatility": interpret_state("volatility", coin.get("volatility"))
+            }
         }
 
     avg_coin_risk = sum(coin_risk_scores) / len(coin_risk_scores) if coin_risk_scores else 0
@@ -767,7 +1097,7 @@ def build_exit_engine(snapshot):
     reentry_engine = build_reentry_engine(snapshot, global_action)
     btc = snapshot.get("btc", {})
 
-    return {
+    engine = {
         "engine_version": ENGINE_VERSION,
         "engine_status": "active",
         "global_action": global_action,
@@ -796,6 +1126,7 @@ def build_exit_engine(snapshot):
             "volatility_adjusted_sizing": True,
             "position_size_adjusted_sizing": True,
             "portfolio_aware_sizing": True,
+            "score_intelligence_enabled": True,
             "no_trade_if_expected_slippage_above_5pct": True
         },
         "allocation_plan": allocation_plan,
@@ -803,3 +1134,7 @@ def build_exit_engine(snapshot):
         "signals": signals,
         "missing_engine_data": missing
     }
+
+    engine["score_interpretation"] = build_score_interpretation(engine)
+
+    return engine
