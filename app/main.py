@@ -531,6 +531,12 @@ async def dashboard():
         .statusline { color:#9ca3af; font-size:13px; margin-bottom:14px; }
         table { width:100%; border-collapse:collapse; }
         td,th { border-bottom:1px solid #1f2937; padding:8px; text-align:left; }
+        .explain { background:#020617; border:1px solid #334155; border-radius:10px; padding:10px; margin-top:10px; color:#cbd5e1; font-size:14px; }
+        .explain-title { font-weight:bold; color:#ffffff; margin-bottom:5px; }
+        .detail { display:block; margin:2px 0; color:#cbd5e1; }
+        .legend { margin-top:10px; font-size:13px; color:#cbd5e1; }
+        .legend-row { display:flex; justify-content:space-between; border-bottom:1px solid #1f2937; padding:4px 0; gap:12px; }
+        .legend-row span:first-child { color:#93c5fd; min-width:70px; }
     </style>
 </head>
 <body>
@@ -551,6 +557,7 @@ async def dashboard():
             <div id="global_action" class="metric">Loading...</div>
             <p>Exit Zone Score: <span id="exit_score">...</span></p>
             <div class="barwrap"><div id="exit_bar" class="bar"></div></div>
+            <div id="exit_zone_explain" class="explain"></div>
         </div>
 
         <div class="card">
@@ -559,6 +566,7 @@ async def dashboard():
             <p>Cycle State: <span id="cycle_state">...</span></p>
             <p>CBBI: <span id="cbbi_value">...</span></p>
             <p>Pi Cycle: <span id="pi_cycle">...</span></p>
+            <div id="cycle_explain" class="explain"></div>
         </div>
 
         <div class="card">
@@ -567,6 +575,8 @@ async def dashboard():
             <p>Macro State: <span id="macro_state">...</span></p>
             <p>Fear & Greed: <span id="fear_greed">...</span></p>
             <p>BTC Dominance: <span id="btc_dominance">...</span></p>
+            <div id="macro_explain" class="explain"></div>
+            <div id="fear_explain" class="explain"></div>
         </div>
 
         <div class="card">
@@ -575,8 +585,12 @@ async def dashboard():
             <p>Total PnL: <span id="portfolio_pnl">...</span></p>
             <p>Risk: <span id="portfolio_risk">...</span></p>
             <p>Largest: <span id="largest_position">...</span></p>
+            <div id="portfolio_explain" class="explain"></div>
         </div>
     </div>
+
+    <h2>Score Legenda</h2>
+    <div id="score_legend" class="grid"></div>
 
     <h2>Trigger Status</h2>
     <div class="card">
@@ -611,6 +625,33 @@ function safe(obj, path, fallback = "...") {
     }
 }
 
+function explainHtml(title, item) {
+    if (!item) return "";
+    const details = item.details || [];
+    return `
+        <div class="explain-title">${title}: ${item.label || "..."}</div>
+        <div>${item.meaning || ""}</div>
+        ${details.map(d => `<span class="detail">${d}</span>`).join("")}
+    `;
+}
+
+function legendHtml(title, rows) {
+    if (!rows || !rows.length) return "";
+    return `
+        <div class="card">
+            <h3>${title}</h3>
+            <div class="legend">
+                ${rows.map(r => `
+                    <div class="legend-row">
+                        <span>${r.range}</span>
+                        <span>${r.meaning}</span>
+                    </div>
+                `).join("")}
+            </div>
+        </div>
+    `;
+}
+
 async function loadData() {
     const res = await fetch('/market/exit-engine');
     const data = await res.json();
@@ -620,6 +661,8 @@ async function loadData() {
     const sc = data.score_components || {};
     const portfolio = data.portfolio_intelligence || {};
     const risk = portfolio.portfolio_risk || {};
+    const interp = data.score_interpretation || {};
+    const legend = interp.legend || {};
 
     document.getElementById('global_action').innerText = data.global_action || "...";
     document.getElementById('exit_score').innerText = data.exit_zone_score ?? "...";
@@ -639,6 +682,22 @@ async function loadData() {
     document.getElementById('portfolio_pnl').innerText = "$" + (portfolio.total_unrealized_pnl ?? "...") + " / " + (portfolio.portfolio_pnl_pct ?? "...") + "%";
     document.getElementById('portfolio_risk').innerText = risk.state ?? "...";
     document.getElementById('largest_position').innerText = (risk.largest_position ?? "...") + " / " + (risk.largest_position_pct ?? "...") + "%";
+
+    document.getElementById('exit_zone_explain').innerHTML = explainHtml("Betekenis Exit Zone", interp.exit_zone);
+    document.getElementById('cycle_explain').innerHTML =
+        explainHtml("Betekenis Cycle Score", interp.cycle_score) +
+        "<hr>" +
+        explainHtml("Betekenis Cycle State", interp.cycle_state);
+
+    document.getElementById('macro_explain').innerHTML = explainHtml("Betekenis Macro Score", interp.macro_score);
+    document.getElementById('fear_explain').innerHTML = explainHtml("Betekenis Fear & Greed", interp.fear_greed);
+    document.getElementById('portfolio_explain').innerHTML = explainHtml("Betekenis Portfolio Risk", interp.portfolio_risk);
+
+    document.getElementById('score_legend').innerHTML =
+        legendHtml("Exit Zone Score", legend.exit_zone_score) +
+        legendHtml("Cycle Score", legend.cycle_score) +
+        legendHtml("Coin Score", legend.coin_score) +
+        legendHtml("RSI", legend.rsi);
 
     document.getElementById('trigger_macro_value').innerText = sc.macro_cycle_risk_score ?? "...";
     document.getElementById('trigger_macro_status').innerText = (sc.macro_cycle_risk_score || 0) >= 20 ? "risk active" : "geen groot risico";
@@ -665,6 +724,7 @@ async function loadData() {
 
         const adaptive = coin.adaptive_execution || {};
         const p = coin.portfolio_position || {};
+        const ci = coin.interpretations || {};
 
         card.innerHTML = `
             <div class="coin-title">
@@ -673,6 +733,8 @@ async function loadData() {
             </div>
 
             <p><b>Score:</b> ${coin.score}</p>
+            <div class="explain">${explainHtml("Betekenis Coin Score", ci.coin_score)}</div>
+
             <p><b>Verkooppercentage:</b> ${coin.sell_pct}</p>
             <p><b>Verkoophoeveelheid vandaag:</b> ${coin.sell_qty}</p>
             <p><b>Doelhoeveelheid verkoop:</b> ${coin.target_total_sell_qty || 0}</p>
@@ -690,9 +752,16 @@ async function loadData() {
             <hr>
 
             <p><b>Liquidity:</b> ${coin.liquidity}</p>
+            <div class="explain">${explainHtml("Betekenis Liquidity", ci.liquidity)}</div>
+
             <p><b>Trend:</b> ${coin.trend}</p>
+
             <p><b>Volatility:</b> ${coin.volatility}</p>
+            <div class="explain">${explainHtml("Betekenis Volatility", ci.volatility)}</div>
+
             <p><b>RSI:</b> ${coin.rsi_14d}</p>
+            <div class="explain">${explainHtml("Betekenis RSI", ci.rsi)}</div>
+
             <p><b>ATR:</b> ${coin.atr_14d}</p>
 
             <hr>
