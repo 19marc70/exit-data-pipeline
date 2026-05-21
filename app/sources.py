@@ -142,13 +142,13 @@ async def get_btc_price_history():
     if not data:
         return []
 
+    prices = data.get("prices", [])
+
     closes = [
         float(x[1])
-        for x in data.get("prices", [])
+        for x in prices
         if isinstance(x, list) and len(x) >= 2
     ]
-
-    print(f"BTC closes loaded: {len(closes)}")
 
     return closes
 
