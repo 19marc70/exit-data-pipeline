@@ -134,7 +134,7 @@ async def get_btc_price_history():
         "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart",
         {
             "vs_currency": "usd",
-            "days": "750",
+            "days": "max",
             "interval": "daily"
         },
     )
