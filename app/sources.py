@@ -142,11 +142,9 @@ async def get_btc_price_history():
     if not data:
         return []
 
-    prices = data.get("prices", [])
-
-    closes = [
+    return [
         float(x[1])
-        for x in prices
+        for x in data.get("prices", [])
         if isinstance(x, list) and len(x) >= 2
     ]
 
