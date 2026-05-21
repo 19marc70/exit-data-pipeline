@@ -745,10 +745,20 @@ async function loadData() {
             <hr>
 
             <p><b>Portfolio waarde:</b> $${p.market_value ?? "..."}</p>
-            <p><b>PnL:</b> ${p.pnl_pct ?? "..."}%</p>
-            <p><b>Allocatie:</b> ${p.allocation_pct ?? "..."}%</p>
-            <p><b>Risk state:</b> ${p.risk_state ?? "..."}</p>
 
+<p><b>Holdings:</b> ${p.qty ?? "..."} ${symbol}</p>
+
+<p><b>Gemiddelde aankoopprijs:</b> $${p.avg_entry ?? "..."}</p>
+
+<p><b>Huidige prijs:</b> $${p.current_price ?? "..."}</p>
+
+<p><b>Cost basis:</b> $${p.cost_basis ?? "..."}</p>
+
+<p><b>PnL:</b> ${p.pnl_pct ?? "..."}%</p>
+
+<p><b>Allocatie:</b> ${p.allocation_pct ?? "..."}%</p>
+
+<p><b>Risk state:</b> ${p.risk_state ?? "..."}</p>
             <hr>
 
             <p><b>Liquidity:</b> ${coin.liquidity}</p>
