@@ -1,7 +1,6 @@
 import math
 import asyncio
 import pandas as pd
-import httpx
 import ccxt.async_support as ccxt
 
 
@@ -29,12 +28,7 @@ EXCHANGES = [
 
 def create_exchange(name):
     exchange_class = getattr(ccxt, name)
-    return exchange_class(
-        {
-            "enableRateLimit": True,
-            "timeout": 30000,
-        }
-    )
+    return exchange_class({"enableRateLimit": True, "timeout": 30000})
 
 
 async def load_markets(exchange):
@@ -45,7 +39,6 @@ async def load_markets(exchange):
 
     markets = await exchange.load_markets()
     MARKET_CACHE[exchange_id] = markets
-
     return markets
 
 
@@ -59,11 +52,7 @@ async def fetch_ohlcv_from_exchange(exchange_name, symbol_candidates, timeframe=
             if symbol not in markets:
                 continue
 
-            candles = await exchange.fetch_ohlcv(
-                symbol,
-                timeframe=timeframe,
-                limit=limit,
-            )
+            candles = await exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
 
             if candles and len(candles) >= 40:
                 df = pd.DataFrame(
@@ -127,13 +116,11 @@ def calculate_rsi(close, period=14):
         return None
 
     delta = close.diff()
-
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
 
     avg_gain = gain.ewm(alpha=1 / period, adjust=False).mean()
     avg_loss = loss.ewm(alpha=1 / period, adjust=False).mean()
-
     avg_loss = avg_loss.replace(0, math.nan)
 
     rs = avg_gain / avg_loss
@@ -202,10 +189,7 @@ async def build_coin_indicators(symbol):
     symbol = symbol.upper()
 
     try:
-        df, source, used_symbol = await get_exchange_ohlcv(
-            symbol,
-            limit=120,
-        )
+        df, source, used_symbol = await get_exchange_ohlcv(symbol, limit=120)
 
         rsi = calculate_rsi(df["close"])
         atr = calculate_atr(df)
@@ -219,7 +203,7 @@ async def build_coin_indicators(symbol):
             "atr_14d": atr["atr_14d"],
             "atr_pct_14d": atr["atr_pct_14d"],
             "volatility": atr["volatility"],
-            "indicator_method": "ccxt_exchange_ohlcv_rsi_atr_v3",
+            "indicator_method": "ccxt_exchange_ohlcv_rsi_atr_v4",
             "indicator_source": source,
             "indicator_symbol": used_symbol,
         }
@@ -254,27 +238,11 @@ async def build_coin_indicators(symbol):
 
 async def build_btc_pi_cycle():
     try:
-        url = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart"
+        df, source, used_symbol = await get_exchange_ohlcv("BTC", limit=400)
 
-        params = {
-            "vs_currency": "usd",
-            "days": "3650",
-            "interval": "daily",
-        }
+        close = pd.to_numeric(df["close"], errors="coerce").dropna()
 
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.get(url, params=params)
-
-            if response.status_code == 429:
-                await asyncio.sleep(10)
-                response = await client.get(url, params=params)
-
-            response.raise_for_status()
-            data = response.json()
-
-        prices = data.get("prices", [])
-
-        if len(prices) < 350:
+        if len(close) < 350:
             return {
                 "status": "unknown",
                 "cycle_state": "⚪ insufficient_history",
@@ -283,23 +251,29 @@ async def build_btc_pi_cycle():
                 "distance_pct": None,
                 "top_risk": False,
                 "triggered": False,
-                "method": "pi_cycle_111dma_vs_350dma_x2",
-                "indicator_source": "coingecko_btc_market_chart",
-                "candles_used": len(prices),
+                "method": "real_pi_cycle_ccxt_111dma_350dma_x2",
+                "indicator_source": source,
+                "indicator_symbol": used_symbol,
+                "candles_used": len(close),
             }
-
-        df = pd.DataFrame(prices, columns=["timestamp", "close"])
-
-        close = pd.to_numeric(df["close"], errors="coerce").dropna()
-
-        if len(close) < 350:
-            raise Exception(f"Insufficient clean BTC candles: {len(close)}")
 
         ma_111 = close.rolling(window=111, min_periods=111).mean().iloc[-1]
         ma_350x2 = close.rolling(window=350, min_periods=350).mean().iloc[-1] * 2
 
         if pd.isna(ma_111) or pd.isna(ma_350x2) or ma_111 <= 0:
-            raise Exception("Pi Cycle moving averages unavailable")
+            return {
+                "status": "unknown",
+                "cycle_state": "⚪ unavailable",
+                "ma_111": None,
+                "ma_350x2": None,
+                "distance_pct": None,
+                "top_risk": False,
+                "triggered": False,
+                "method": "real_pi_cycle_ccxt_111dma_350dma_x2",
+                "indicator_source": source,
+                "indicator_symbol": used_symbol,
+                "candles_used": len(close),
+            }
 
         distance_pct = ((ma_350x2 - ma_111) / ma_111) * 100
 
@@ -314,8 +288,8 @@ async def build_btc_pi_cycle():
             top_risk = False
             triggered = False
         elif distance_pct <= 25:
-            status = "mid_late_cycle"
-            state = "🟡 MID_LATE_CYCLE"
+            status = "mid_cycle"
+            state = "🟡 MID_CYCLE"
             top_risk = False
             triggered = False
         else:
@@ -332,8 +306,9 @@ async def build_btc_pi_cycle():
             "distance_pct": round(float(distance_pct), 2),
             "top_risk": top_risk,
             "triggered": triggered,
-            "method": "pi_cycle_111dma_vs_350dma_x2",
-            "indicator_source": "coingecko_btc_market_chart",
+            "method": "real_pi_cycle_ccxt_111dma_350dma_x2",
+            "indicator_source": source,
+            "indicator_symbol": used_symbol,
             "candles_used": len(close),
         }
 
@@ -348,7 +323,6 @@ async def build_btc_pi_cycle():
             "distance_pct": None,
             "top_risk": False,
             "triggered": False,
-            "method": "pi_cycle_111dma_vs_350dma_x2",
-            "indicator_source": "coingecko_btc_market_chart",
+            "method": "real_pi_cycle_ccxt_111dma_350dma_x2",
             "error": str(e),
         }
