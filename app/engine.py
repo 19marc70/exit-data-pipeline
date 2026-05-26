@@ -1,33 +1,10 @@
-ENGINE_VERSION = "2.4-phase-24-score-intelligence-layer"
+ENGINE_VERSION = "v10.1-fixed-rsi-atr-picycle-engine"
 
 PORTFOLIO = {
-    "XRP": {
-        "qty": 11093.5,
-        "sellable": 0.0,
-        "moonbag": 11093.5,
-        "avg_entry": 0.9699,
-    },
-
-    "ONDO": {
-        "qty": 22397.63463725,
-        "sellable": 22397.63463725,
-        "moonbag": 1925.0,
-        "avg_entry": 0.5018,
-    },
-
-    "AERO": {
-        "qty": 10251.39604089,
-        "sellable": 10251.39604089,
-        "moonbag": 750.0,
-        "avg_entry": 0.5379,
-    },
-
-    "CFG": {
-        "qty": 10667.05368724,
-        "sellable": 10667.05368724,
-        "moonbag": 744.0,
-        "avg_entry": 0.2268,
-    },
+    "XRP": {"qty": 11093.5, "sellable": 0.0, "moonbag": 11093.5, "avg_entry": 0.9699},
+    "ONDO": {"qty": 22397.63463725, "sellable": 22397.63463725, "moonbag": 1925.0, "avg_entry": 0.5018},
+    "AERO": {"qty": 10251.39604089, "sellable": 10251.39604089, "moonbag": 750.0, "avg_entry": 0.5379},
+    "CFG": {"qty": 10667.05368724, "sellable": 10667.05368724, "moonbag": 744.0, "avg_entry": 0.2268},
 }
 
 GUARDRAILS = {
@@ -56,189 +33,65 @@ def text_contains(value, word):
 
 def interpret_score(category, value):
     if value is None:
-        return {
-            "label": "⚪ unknown",
-            "meaning": "geen data beschikbaar",
-            "details": ["⚪ onvoldoende data"]
-        }
+        return {"label": "⚪ unknown", "meaning": "geen data beschikbaar", "details": ["⚪ onvoldoende data"]}
 
     value = safe_float(value)
 
     rules = {
         "exit_zone": [
-            (-999, 20, "🟢 Accumulatiezone", [
-                "⚪ markt vroeg in cyclus",
-                "⚪ geen agressieve verkoop nodig",
-                "⚪ geen bevestigde distributiefase"
-            ]),
-            (20, 40, "🟡 Vroege bullfase", [
-                "⚪ opbouwfase",
-                "⚪ nog geen sterke distributie",
-                "⚪ monitoren"
-            ]),
-            (40, 60, "🟠 Verhoogde distributiekans", [
-                "⚪ voorzichtig worden",
-                "⚪ gedeeltelijke winstneming mogelijk",
-                "⚪ extra bevestiging nodig"
-            ]),
-            (60, 80, "🔴 Exit-zone dichtbij", [
-                "⚪ hogere kans op topvorming",
-                "⚪ gedeeltelijke verkoop overwegen",
-                "⚪ execution-limits respecteren"
-            ]),
-            (80, 999, "🚨 Historische topzone", [
-                "⚪ euforie",
-                "⚪ grote distributierisico's",
-                "⚪ alleen verkopen binnen liquidity guardrails"
-            ]),
+            (-999, 20, "🟢 Accumulatiezone", ["⚪ markt vroeg in cyclus", "⚪ geen agressieve verkoop nodig", "⚪ geen bevestigde distributiefase"]),
+            (20, 40, "🟡 Vroege bullfase", ["⚪ opbouwfase", "⚪ nog geen sterke distributie", "⚪ monitoren"]),
+            (40, 60, "🟠 Verhoogde distributiekans", ["⚪ voorzichtig worden", "⚪ gedeeltelijke winstneming mogelijk", "⚪ extra bevestiging nodig"]),
+            (60, 80, "🔴 Exit-zone dichtbij", ["⚪ hogere kans op topvorming", "⚪ gedeeltelijke verkoop overwegen", "⚪ execution-limits respecteren"]),
+            (80, 999, "🚨 Historische topzone", ["⚪ euforie", "⚪ grote distributierisico's", "⚪ alleen verkopen binnen liquidity guardrails"]),
         ],
         "cycle": [
-            (-999, 0, "🟢 Accumulatie / onderwaardering", [
-                "⚪ historisch goedkoop",
-                "⚪ geen top-signalen"
-            ]),
-            (0, 20, "🟡 Neutrale fase", [
-                "⚪ zeer vroeg / neutraal",
-                "⚪ geen top-signalen",
-                "⚪ geen distributiefase",
-                "⚪ geen reden voor agressieve verkopen"
-            ]),
-            (20, 40, "🟡 Bullmarkt bouwt op", [
-                "⚪ momentum neemt toe",
-                "⚪ nog geen exit-zone"
-            ]),
-            (40, 60, "🟠 Verhoogde distributiekans", [
-                "⚪ markt wordt warmer",
-                "⚪ voorzichtig worden"
-            ]),
-            (60, 80, "🔴 Exit-zone", [
-                "⚪ risico stijgt",
-                "⚪ gedeeltelijke exits mogelijk"
-            ]),
-            (80, 999, "🚨 Hoge euforie / top-risico", [
-                "⚪ historisch oververhit",
-                "⚪ top-risico hoog"
-            ]),
+            (-999, 0, "🟢 Accumulatie / onderwaardering", ["⚪ historisch goedkoop", "⚪ geen top-signalen"]),
+            (0, 20, "🟡 Neutrale fase", ["⚪ zeer vroeg / neutraal", "⚪ geen top-signalen", "⚪ geen distributiefase"]),
+            (20, 40, "🟡 Bullmarkt bouwt op", ["⚪ momentum neemt toe", "⚪ nog geen exit-zone"]),
+            (40, 60, "🟠 Verhoogde distributiekans", ["⚪ markt wordt warmer", "⚪ voorzichtig worden"]),
+            (60, 80, "🔴 Exit-zone", ["⚪ risico stijgt", "⚪ gedeeltelijke exits mogelijk"]),
+            (80, 999, "🚨 Hoge euforie / top-risico", ["⚪ historisch oververhit", "⚪ top-risico hoog"]),
         ],
         "macro": [
-            (-999, -20, "🟢 Macro positief", [
-                "⚪ ondersteunende omgeving",
-                "⚪ geen macro-exitdruk"
-            ]),
-            (-20, 20, "🟡 Macro neutraal", [
-                "⚪ geen duidelijke richting",
-                "⚪ wachten op bevestiging"
-            ]),
-            (20, 40, "🟠 Macro waarschuwing", [
-                "⚪ macro-risico stijgt",
-                "⚪ voorzichtig worden"
-            ]),
-            (40, 60, "🔴 Hoog macro-risico", [
-                "⚪ beschermingsmodus",
-                "⚪ exits voorbereiden"
-            ]),
-            (60, 999, "🚨 Extreem macro-risico", [
-                "⚪ agressieve defensie",
-                "⚪ multi-factor exit waarschijnlijk"
-            ]),
+            (-999, -20, "🟢 Macro positief", ["⚪ ondersteunende omgeving", "⚪ geen macro-exitdruk"]),
+            (-20, 20, "🟡 Macro neutraal", ["⚪ geen duidelijke richting", "⚪ wachten op bevestiging"]),
+            (20, 40, "🟠 Macro waarschuwing", ["⚪ macro-risico stijgt", "⚪ voorzichtig worden"]),
+            (40, 60, "🔴 Hoog macro-risico", ["⚪ beschermingsmodus", "⚪ exits voorbereiden"]),
+            (60, 999, "🚨 Extreem macro-risico", ["⚪ agressieve defensie", "⚪ multi-factor exit waarschijnlijk"]),
         ],
         "fear": [
-            (0, 25, "🟢 Extreme Fear", [
-                "⚪ historisch vaak accumulatie",
-                "⚪ geen euforie"
-            ]),
-            (25, 45, "🟡 Fear", [
-                "⚪ voorzichtig sentiment",
-                "⚪ geen top-euforie"
-            ]),
-            (45, 55, "⚪ Neutral", [
-                "⚪ geen duidelijke richting"
-            ]),
-            (55, 75, "🟠 Greed", [
-                "⚪ risico neemt toe",
-                "⚪ monitoren"
-            ]),
-            (75, 101, "🔴 Extreme Greed", [
-                "⚪ euforie",
-                "⚪ top-risico stijgt"
-            ]),
+            (0, 25, "🟢 Extreme Fear", ["⚪ historisch vaak accumulatie", "⚪ geen euforie"]),
+            (25, 45, "🟡 Fear", ["⚪ voorzichtig sentiment", "⚪ geen top-euforie"]),
+            (45, 55, "⚪ Neutral", ["⚪ geen duidelijke richting"]),
+            (55, 75, "🟠 Greed", ["⚪ risico neemt toe", "⚪ monitoren"]),
+            (75, 101, "🔴 Extreme Greed", ["⚪ euforie", "⚪ top-risico stijgt"]),
         ],
         "coin": [
-            (-999, 0, "🟢 Accumulatie / laag risico", [
-                "⚪ geen sell-druk vanuit score",
-                "⚪ meestal HOLD"
-            ]),
-            (0, 20, "🟡 Hold / normaal risico", [
-                "⚪ normaal gedrag",
-                "⚪ geen directe exit"
-            ]),
-            (20, 40, "🟠 Voorzichtig", [
-                "⚪ opletten",
-                "⚪ extra bevestiging nodig"
-            ]),
-            (40, 60, "🔴 Gedeeltelijke verkoopzone", [
-                "⚪ distributie mogelijk",
-                "⚪ alleen bij multi-factor bevestiging"
-            ]),
-            (60, 999, "🚨 Sterke verkoopzone", [
-                "⚪ hoog risico",
-                "⚪ adaptive sell mogelijk"
-            ]),
+            (-999, 0, "🟢 Accumulatie / laag risico", ["⚪ geen sell-druk vanuit score", "⚪ meestal HOLD"]),
+            (0, 20, "🟡 Hold / normaal risico", ["⚪ normaal gedrag", "⚪ geen directe exit"]),
+            (20, 40, "🟠 Voorzichtig", ["⚪ opletten", "⚪ extra bevestiging nodig"]),
+            (40, 60, "🔴 Gedeeltelijke verkoopzone", ["⚪ distributie mogelijk", "⚪ alleen bij multi-factor bevestiging"]),
+            (60, 999, "🚨 Sterke verkoopzone", ["⚪ hoog risico", "⚪ adaptive sell mogelijk"]),
         ],
         "portfolio_risk": [
-            (0, 15, "🟢 Laag portfolio-risico", [
-                "⚪ concentratie beperkt",
-                "⚪ drawdown beheersbaar"
-            ]),
-            (15, 30, "🟡 Medium portfolio-risico", [
-                "⚪ concentratie of drawdown aanwezig",
-                "⚪ extra voorzichtig met sizing"
-            ]),
-            (30, 999, "🔴 Hoog portfolio-risico", [
-                "⚪ concentratie/drawdown hoog",
-                "⚪ portfolio modifier actief"
-            ]),
+            (0, 15, "🟢 Laag portfolio-risico", ["⚪ concentratie beperkt", "⚪ drawdown beheersbaar"]),
+            (15, 30, "🟡 Medium portfolio-risico", ["⚪ concentratie of drawdown aanwezig", "⚪ extra voorzichtig met sizing"]),
+            (30, 999, "🔴 Hoog portfolio-risico", ["⚪ concentratie/drawdown hoog", "⚪ portfolio modifier actief"]),
         ],
         "rsi": [
-            (0, 30, "🟢 Oversold", [
-                "⚪ mogelijk uitgeputte verkoopdruk",
-                "⚪ geen automatische exit"
-            ]),
-            (30, 70, "🟡 Normaal", [
-                "⚪ geen extreme RSI",
-                "⚪ neutraal"
-            ]),
-            (70, 80, "🟠 Overbought", [
-                "⚪ momentum heet",
-                "⚪ monitoren"
-            ]),
-            (80, 101, "🔴 Extreme overbought", [
-                "⚪ euforie mogelijk",
-                "⚪ exit-bevestiging zoeken"
-            ]),
+            (0, 30, "🟢 Oversold", ["⚪ mogelijk uitgeputte verkoopdruk", "⚪ geen automatische exit"]),
+            (30, 70, "🟡 Normaal", ["⚪ geen extreme RSI", "⚪ neutraal"]),
+            (70, 80, "🟠 Overbought", ["⚪ momentum heet", "⚪ monitoren"]),
+            (80, 101, "🔴 Extreme overbought", ["⚪ euforie mogelijk", "⚪ exit-bevestiging zoeken"]),
         ],
     }
 
-    if category not in rules:
-        return {
-            "label": "⚪ unknown",
-            "meaning": "geen interpretatie beschikbaar",
-            "details": ["⚪ categorie onbekend"]
-        }
-
-    for low, high, label, details in rules[category]:
+    for low, high, label, details in rules.get(category, []):
         if low <= value < high:
-            return {
-                "label": label,
-                "meaning": label,
-                "details": details
-            }
+            return {"label": label, "meaning": label, "details": details}
 
-    return {
-        "label": "⚪ unknown",
-        "meaning": "buiten bereik",
-        "details": ["⚪ waarde buiten interpretatiebereik"]
-    }
+    return {"label": "⚪ unknown", "meaning": "buiten bereik", "details": ["⚪ waarde buiten interpretatiebereik"]}
 
 
 def interpret_state(category, value):
@@ -246,81 +99,33 @@ def interpret_state(category, value):
 
     if category == "cycle_state":
         if "ACCUMULATION" in text:
-            return {
-                "label": "🟢 ACCUMULATION_SUPPORT",
-                "meaning": "historisch goedkoop / ondersteunend",
-                "details": ["⚪ geen topfase", "⚪ gunstig voor vasthouden of heraccumulatie"]
-            }
+            return {"label": "🟢 ACCUMULATION_SUPPORT", "meaning": "historisch goedkoop / ondersteunend", "details": ["⚪ geen topfase"]}
         if "NEUTRAL" in text:
-            return {
-                "label": "🟡 NEUTRAL_CYCLE",
-                "meaning": "geen duidelijke richting",
-                "details": ["⚪ geen top-signalen", "⚪ geen distributiefase"]
-            }
+            return {"label": "🟡 NEUTRAL_CYCLE", "meaning": "geen duidelijke richting", "details": ["⚪ geen top-signalen"]}
         if "LATE" in text or "DISTRIBUTION" in text:
-            return {
-                "label": "🟠 LATE_CYCLE / EARLY_DISTRIBUTION",
-                "meaning": "voorzichtig worden",
-                "details": ["⚪ distributierisico stijgt", "⚪ bevestiging nodig"]
-            }
+            return {"label": "🟠 LATE_CYCLE", "meaning": "voorzichtig worden", "details": ["⚪ distributierisico stijgt"]}
         if "TOP" in text or "EXIT" in text or "EUPHORIA" in text:
-            return {
-                "label": "🔴 TOP / EXIT_ZONE",
-                "meaning": "grote exitfase of euforie",
-                "details": ["⚪ top-risico hoog", "⚪ staged exits mogelijk"]
-            }
+            return {"label": "🔴 TOP / EXIT_ZONE", "meaning": "grote exitfase of euforie", "details": ["⚪ top-risico hoog"]}
 
     if category == "liquidity":
         if "strong" in text.lower():
-            return {
-                "label": "🟢 strong",
-                "meaning": "goede uitvoerbaarheid",
-                "details": ["⚪ lagere slippage", "⚪ max dagelijkse verkoop hoger"]
-            }
+            return {"label": "🟢 strong", "meaning": "goede uitvoerbaarheid", "details": ["⚪ lagere slippage"]}
         if "moderate" in text.lower():
-            return {
-                "label": "🟡 moderate",
-                "meaning": "voorzichtig uitvoeren",
-                "details": ["⚪ ladder execution", "⚪ max 10% per dag"]
-            }
+            return {"label": "🟡 moderate", "meaning": "voorzichtig uitvoeren", "details": ["⚪ ladder execution"]}
         if "severe" in text.lower():
-            return {
-                "label": "🔴 severe",
-                "meaning": "zeer slechte liquiditeit",
-                "details": ["⚪ verkoop kan prijs bewegen", "⚪ geen agressieve exits", "⚪ slippage >5% blokkeren"]
-            }
+            return {"label": "🔴 severe", "meaning": "zeer slechte liquiditeit", "details": ["⚪ geen agressieve exits"]}
 
     if category == "volatility":
         if "low" in text.lower():
-            return {
-                "label": "🟢 low",
-                "meaning": "rustige markt",
-                "details": ["⚪ execution makkelijker", "⚪ minder ATR-risico"]
-            }
+            return {"label": "🟢 low", "meaning": "rustige markt", "details": ["⚪ execution makkelijker"]}
         if "medium" in text.lower():
-            return {
-                "label": "🟡 medium",
-                "meaning": "normale schommelingen",
-                "details": ["⚪ standaard voorzichtigheid"]
-            }
+            return {"label": "🟡 medium", "meaning": "normale schommelingen", "details": ["⚪ standaard voorzichtigheid"]}
         if "elevated" in text.lower():
-            return {
-                "label": "🟠 elevated",
-                "meaning": "verhoogde volatiliteit",
-                "details": ["⚪ kleinere verkoopblokken", "⚪ adaptive sell verlaagt sizing"]
-            }
+            return {"label": "🟠 elevated", "meaning": "verhoogde volatiliteit", "details": ["⚪ kleinere verkoopblokken"]}
         if "high" in text.lower():
-            return {
-                "label": "🔴 high",
-                "meaning": "hoge volatiliteit",
-                "details": ["⚪ execution risk hoog", "⚪ agressieve verkoop vermijden"]
-            }
+            return {"label": "🔴 high", "meaning": "hoge volatiliteit", "details": ["⚪ execution risk hoog"]}
 
-    return {
-        "label": str(value),
-        "meaning": "geen aanvullende interpretatie",
-        "details": []
-    }
+    return {"label": str(value), "meaning": "geen aanvullende interpretatie", "details": []}
 
 
 def classify_liquidity(symbol, coin):
@@ -329,16 +134,12 @@ def classify_liquidity(symbol, coin):
 
     if symbol == "CFG":
         return "🔴 severe"
-
     if volume <= 500_000:
         return "🔴 severe"
-
     if volume <= 5_000_000:
         return "🟡 moderate"
-
     if market_cap > 0 and volume / market_cap < 0.01:
         return "🟡 moderate"
-
     return "🟢 strong"
 
 
@@ -387,44 +188,33 @@ def atr_multiplier(price, atr):
         return 0.75
     if atr_pct >= 1:
         return 0.90
-
     return 1.0
 
 
 def position_size_multiplier(symbol):
     sellable = safe_float(PORTFOLIO.get(symbol, {}).get("sellable"))
-
     if sellable <= 0:
         return 0.0
-
     if symbol == "CFG":
         return 0.50
-
     if sellable >= 20_000:
         return 0.85
-
     if sellable >= 10_000:
         return 0.90
-
     return 1.0
 
 
 def estimate_slippage_risk(liquidity, volatility, sell_qty, max_daily_qty):
     if sell_qty <= 0:
         return "none"
-
     if text_contains(liquidity, "severe"):
         return "above_5pct_blocked"
-
     if max_daily_qty > 0 and sell_qty > max_daily_qty:
         return "above_daily_limit"
-
     if text_contains(volatility, "high"):
         return "elevated"
-
     if text_contains(volatility, "elevated") and text_contains(liquidity, "moderate"):
         return "elevated"
-
     return "controlled"
 
 
@@ -523,7 +313,6 @@ def score_cycle_and_macro(snapshot):
 
     if cbbi_value is not None:
         cbbi_value = safe_float(cbbi_value)
-
         if cbbi_value >= 85:
             risk_score += 35
             reasons.append("cbbi_top_zone")
@@ -536,7 +325,6 @@ def score_cycle_and_macro(snapshot):
 
     if fg_value is not None:
         fg_value = safe_float(fg_value)
-
         if fg_value >= 80:
             risk_score += 15
             reasons.append("fear_greed_extreme_greed")
@@ -546,7 +334,6 @@ def score_cycle_and_macro(snapshot):
 
     if btc_dominance is not None:
         btc_dominance = safe_float(btc_dominance)
-
         if btc_dominance >= 58:
             risk_score += 10
             reasons.append("btc_dominance_alt_headwind")
@@ -570,15 +357,12 @@ def build_portfolio_intelligence(snapshot):
 
         qty = safe_float(config.get("qty"))
         avg_entry = safe_float(config.get("avg_entry"))
-        price = safe_float(coin.get("usd"))
+        price = safe_float(coin.get("current_price") or coin.get("usd"))
 
         market_value = qty * price
         cost_basis = qty * avg_entry
         unrealized_pnl = market_value - cost_basis
-
-        pnl_pct = 0.0
-        if cost_basis > 0:
-            pnl_pct = (unrealized_pnl / cost_basis) * 100
+        pnl_pct = (unrealized_pnl / cost_basis) * 100 if cost_basis > 0 else 0.0
 
         total_value += market_value
         total_cost += cost_basis
@@ -600,13 +384,9 @@ def build_portfolio_intelligence(snapshot):
     largest_position_pct = 0.0
 
     for symbol, position in positions.items():
-        allocation_pct = 0.0
-
-        if total_value > 0:
-            allocation_pct = (position["market_value"] / total_value) * 100
+        allocation_pct = (position["market_value"] / total_value) * 100 if total_value > 0 else 0.0
 
         risk_state = "normal"
-
         if allocation_pct >= 50:
             risk_state = "high_concentration"
         elif allocation_pct >= 35:
@@ -624,21 +404,11 @@ def build_portfolio_intelligence(snapshot):
             largest_position_pct = allocation_pct
             largest_position = symbol
 
-    portfolio_pnl_pct = 0.0
-    if total_cost > 0:
-        portfolio_pnl_pct = (total_unrealized_pnl / total_cost) * 100
+    portfolio_pnl_pct = (total_unrealized_pnl / total_cost) * 100 if total_cost > 0 else 0.0
 
-    concentration_score = 0
-
-    if largest_position_pct >= 60:
-        concentration_score = 25
-    elif largest_position_pct >= 50:
-        concentration_score = 15
-    elif largest_position_pct >= 35:
-        concentration_score = 8
+    concentration_score = 25 if largest_position_pct >= 60 else 15 if largest_position_pct >= 50 else 8 if largest_position_pct >= 35 else 0
 
     drawdown_score = 0
-
     for position in positions.values():
         if position["pnl_pct"] <= -35:
             drawdown_score += 10
@@ -646,13 +416,7 @@ def build_portfolio_intelligence(snapshot):
             drawdown_score += 5
 
     portfolio_risk_score = concentration_score + drawdown_score
-
-    if portfolio_risk_score >= 30:
-        portfolio_state = "HIGH_RISK"
-    elif portfolio_risk_score >= 15:
-        portfolio_state = "MEDIUM_RISK"
-    else:
-        portfolio_state = "LOW_RISK"
+    portfolio_state = "HIGH_RISK" if portfolio_risk_score >= 30 else "MEDIUM_RISK" if portfolio_risk_score >= 15 else "LOW_RISK"
 
     return {
         "total_portfolio_value": round(total_value, 2),
@@ -674,16 +438,12 @@ def build_portfolio_intelligence(snapshot):
 def determine_global_action(exit_zone_score, multi_category_confirmed):
     if exit_zone_score >= 80 and multi_category_confirmed:
         return "HEAVY_DISTRIBUTION"
-
     if exit_zone_score >= 60 and multi_category_confirmed:
         return "PARTIAL_EXIT_ALLOWED"
-
     if exit_zone_score >= 40 and multi_category_confirmed:
         return "LIGHT_TRIM_ALLOWED"
-
     if exit_zone_score <= -20:
         return "ACCUMULATION_SUPPORT"
-
     return "NO_FULL_EXIT"
 
 
@@ -699,7 +459,7 @@ def base_sell_pct_from_exit_zone(exit_zone_score):
 
 def adaptive_sell_engine(symbol, coin, exit_zone_score, liquidity, blockers, confirmations):
     sellable = safe_float(PORTFOLIO.get(symbol, {}).get("sellable"))
-    price = safe_float(coin.get("usd"))
+    price = safe_float(coin.get("current_price") or coin.get("usd"))
     atr = safe_float(coin.get("atr_14d"))
     volatility = coin.get("volatility")
 
@@ -730,13 +490,10 @@ def adaptive_sell_engine(symbol, coin, exit_zone_score, liquidity, blockers, con
 
     if "insufficient_multi_factor_confirmation" in blockers:
         reasons.append("blocked_insufficient_multi_factor_confirmation")
-
     if "execution_liquidity_severe" in blockers:
         reasons.append("blocked_execution_liquidity_severe")
-
     if "no_trade_if_expected_slippage_above_5pct" in blockers:
         reasons.append("blocked_expected_slippage_above_5pct")
-
     if len(confirmations) < 2:
         reasons.append("blocked_less_than_two_confirmations")
 
@@ -755,13 +512,11 @@ def adaptive_sell_engine(symbol, coin, exit_zone_score, liquidity, blockers, con
         }
 
     adjusted_pct = base_sell_pct
-
     for value in multipliers.values():
         adjusted_pct *= value
 
     if text_contains(liquidity, "moderate"):
         adjusted_pct = min(adjusted_pct, 10)
-
     if text_contains(liquidity, "severe"):
         adjusted_pct = 0
 
@@ -773,12 +528,11 @@ def adaptive_sell_engine(symbol, coin, exit_zone_score, liquidity, blockers, con
     target_total_qty = round(sellable * adaptive_sell_pct / 100, 6)
     today_sell_qty = round(min(target_total_qty, max_daily_qty), 6)
 
+    execution_days_estimate = 0
     if max_daily_qty > 0 and target_total_qty > 0:
         execution_days_estimate = int((target_total_qty + max_daily_qty - 0.000001) // max_daily_qty)
         if target_total_qty % max_daily_qty > 0:
             execution_days_estimate += 1
-    else:
-        execution_days_estimate = 0
 
     slippage_risk = estimate_slippage_risk(liquidity, volatility, today_sell_qty, max_daily_qty)
 
@@ -787,12 +541,7 @@ def adaptive_sell_engine(symbol, coin, exit_zone_score, liquidity, blockers, con
         adaptive_sell_pct = 0
         reasons.append(slippage_risk)
 
-    if adaptive_sell_pct >= 25:
-        execution_style = "multi_day_ladder"
-    elif adaptive_sell_pct > 0:
-        execution_style = "limit_ladder"
-    else:
-        execution_style = "hold"
+    execution_style = "multi_day_ladder" if adaptive_sell_pct >= 25 else "limit_ladder" if adaptive_sell_pct > 0 else "hold"
 
     return {
         "base_sell_pct": base_sell_pct,
@@ -819,15 +568,11 @@ def build_allocation_plan(global_action, exit_zone_score, portfolio_intelligence
     elif global_action == "LIGHT_TRIM_ALLOWED":
         stablecoin_target_pct = 15
         status = "LIGHT_STABLECOIN_BUILD"
-    elif global_action == "ACCUMULATION_SUPPORT":
-        stablecoin_target_pct = 0
-        status = "NO_NEW_STABLECOIN_ACTION"
     else:
         stablecoin_target_pct = 0
         status = "NO_NEW_STABLECOIN_ACTION"
 
     concentration_note = "none"
-
     if largest_position_pct >= 50:
         concentration_note = f"{largest_position}_concentration_above_50pct"
 
@@ -837,13 +582,8 @@ def build_allocation_plan(global_action, exit_zone_score, portfolio_intelligence
         "status": status,
         "rule": "only_from_confirmed_sell_signals",
         "portfolio_concentration_note": concentration_note,
-        "xrp_allocation": {
-            "action": "HOLD_10_YEAR_CORE",
-            "sell_allowed": False
-        },
-        "ondo_allocation": {
-            "action": "MAINTAIN_CORE_RAW_POSITION"
-        },
+        "xrp_allocation": {"action": "HOLD_10_YEAR_CORE", "sell_allowed": False},
+        "ondo_allocation": {"action": "MAINTAIN_CORE_RAW_POSITION"},
         "dca_out_ladder": [
             {"zone": "LIGHT_TRIM_ALLOWED", "sell_pct": 10},
             {"zone": "PARTIAL_EXIT_ALLOWED", "sell_pct": 25},
@@ -974,10 +714,8 @@ def build_exit_engine(snapshot):
 
         if structure_score >= 20:
             confirmations.append("market_structure_risk")
-
         if derivatives_score >= 10:
             confirmations.append("derivatives_risk")
-
         if macro_cycle_score >= 20:
             confirmations.append("macro_cycle_risk")
 
@@ -987,10 +725,8 @@ def build_exit_engine(snapshot):
 
         if allocation_pct >= 35:
             confirmations.append("portfolio_concentration_risk")
-
         if pnl_pct >= 50:
             confirmations.append("portfolio_profit_available")
-
         if pnl_pct <= -30:
             blockers.append("avoid_forced_sell_deep_drawdown")
 
@@ -1013,11 +749,12 @@ def build_exit_engine(snapshot):
             "confirmations": confirmations,
             "blockers": blockers,
             "liquidity": liquidity,
-            "price": coin.get("usd"),
+            "price": coin.get("current_price") or coin.get("usd"),
             "change_24h": coin.get("usd_24h_change"),
             "volume_24h": coin.get("usd_24h_vol"),
             "rsi_14d": coin.get("rsi_14d"),
             "atr_14d": coin.get("atr_14d"),
+            "atr_pct_14d": coin.get("atr_pct_14d"),
             "trend": coin.get("trend"),
             "volatility": coin.get("volatility"),
             "portfolio_position": position,
@@ -1047,16 +784,12 @@ def build_exit_engine(snapshot):
     exit_zone_score = round(max(0, macro_cycle_score + market_structure_score), 2)
 
     category_confirmations = 0
-
     if macro_cycle_score >= 20:
         category_confirmations += 1
-
     if market_structure_score >= 20:
         category_confirmations += 1
-
     if any(score_derivatives(coin)[0] >= 10 for coin in coins.values()):
         category_confirmations += 1
-
     if portfolio_risk_score >= 15:
         category_confirmations += 1
 
@@ -1139,5 +872,4 @@ def build_exit_engine(snapshot):
     }
 
     engine["score_interpretation"] = build_score_interpretation(engine)
-
     return engine
