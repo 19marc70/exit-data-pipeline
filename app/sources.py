@@ -764,13 +764,12 @@ prices, btc_dominance, fear_greed, cbbi_bundle, pi_cycle, hyperliquid_contexts =
     get_hyperliquid_contexts(),
 )
 
-    cbbi = cbbi_bundle.get("cbbi", {})
+cbbi = cbbi_bundle.get("cbbi", {})
     macro_components = cbbi_bundle.get("macro_components", {})
 
-
-    
     macro_intelligence = build_macro_intelligence(macro_components)
     cycle_intelligence = build_cycle_score(pi_cycle, cbbi, macro_intelligence)
+
     if not prices:
         fallback = CACHE["snapshot"] or {
             "timestamp": now_iso(),
@@ -779,10 +778,12 @@ prices, btc_dominance, fear_greed, cbbi_bundle, pi_cycle, hyperliquid_contexts =
             "btc": {},
             "missing_data": ["coingecko_unavailable"]
         }
+
         fallback["timestamp"] = now_iso()
         fallback["status"] = "degraded"
         fallback["cache_mode"] = "fallback_cache_active"
         fallback["api_error"] = "coingecko_unavailable"
+
         return fallback
 
     symbols = list(COINS.keys())
