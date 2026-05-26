@@ -755,28 +755,20 @@ async def build_exit_snapshot():
         cached["cache_mode"] = "fresh_cache"
         return cached
 
-    prices, btc_dominance, fear_greed, cbbi_bundle, hyperliquid_contexts = await asyncio.gather(
-        get_prices(),
-        get_btc_dominance(),
-        get_fear_greed(),
-        get_cbbi_bundle(),
-        get_hyperliquid_contexts(),
-    )
+prices, btc_dominance, fear_greed, cbbi_bundle, pi_cycle, hyperliquid_contexts = await asyncio.gather(
+    get_prices(),
+    get_btc_dominance(),
+    get_fear_greed(),
+    get_cbbi_bundle(),
+    build_btc_pi_cycle(),
+    get_hyperliquid_contexts(),
+)
 
     cbbi = cbbi_bundle.get("cbbi", {})
     macro_components = cbbi_bundle.get("macro_components", {})
 
-    pi_raw = macro_components.get("pi_cycle_raw", {}).get("value")
 
-    pi_cycle = {
-        "status": "early_mid_cycle" if pi_raw is not None and pi_raw < 0.75 else "late_cycle",
-        "cycle_state": "🟢 EARLY_MID_CYCLE" if pi_raw is not None and pi_raw < 0.75 else "🟠 LATE_CYCLE",
-        "value": pi_raw,
-        "top_risk": bool(pi_raw is not None and pi_raw >= 0.95),
-        "triggered": bool(pi_raw is not None and pi_raw >= 1.0),
-        "method": "cbbi_pi_cycle_component"
-    }
-
+    
     macro_intelligence = build_macro_intelligence(macro_components)
     cycle_intelligence = build_cycle_score(pi_cycle, cbbi, macro_intelligence)
     if not prices:
