@@ -250,18 +250,26 @@ def score_market_structure(coin):
         score -= 5
         reasons.append("volatility_low")
 
+    if rsi is not None:
+
     if rsi >= 78:
         score += 18
         reasons.append("rsi_overheated")
+
     elif rsi >= 68:
         score += 8
         reasons.append("rsi_elevated")
+
     elif rsi <= 30:
         score -= 10
         reasons.append("rsi_oversold")
+
     elif rsi <= 40:
         score -= 3
         reasons.append("rsi_weak")
+
+else:
+    reasons.append("rsi_unavailable")
 
     return score, reasons
 
