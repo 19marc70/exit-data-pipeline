@@ -16,22 +16,38 @@ async def get_daily_ohlc(symbol: str, days: int = 365) -> pd.DataFrame:
     symbol = symbol.upper()
     coin_id = COINGECKO_IDS[symbol]
 
-    url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/ohlc"
-    params = {"vs_currency": "usd", "days": "365"}
+    url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
+
+    params = {
+        "vs_currency": "usd",
+        "days": str(days),
+        "interval": "daily",
+    }
 
     async with httpx.AsyncClient(timeout=30) as client:
         response = await client.get(url, params=params)
         response.raise_for_status()
         data = response.json()
 
-    df = pd.DataFrame(data, columns=["timestamp", "open", "high", "low", "close"])
+    prices = data.get("prices", [])
+
+    if not prices:
+        raise Exception(f"No market_chart price data returned for {symbol}")
+
+    df = pd.DataFrame(prices, columns=["timestamp", "close"])
+
     df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
-    df = df.sort_values("timestamp").drop_duplicates("timestamp")
+    df["close"] = pd.to_numeric(df["close"], errors="coerce")
 
-    for col in ["open", "high", "low", "close"]:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
+    df = df.dropna().sort_values("timestamp").drop_duplicates("timestamp")
 
-    return df.dropna().reset_index(drop=True)
+    df["open"] = df["close"].shift(1)
+    df["open"] = df["open"].fillna(df["close"])
+
+    df["high"] = df[["open", "close"]].max(axis=1)
+    df["low"] = df[["open", "close"]].min(axis=1)
+
+    return df.reset_index(drop=True)
 
 
 def calculate_rsi(close: pd.Series, period: int = 14) -> float | None:
@@ -51,7 +67,11 @@ def calculate_rsi(close: pd.Series, period: int = 14) -> float | None:
     rsi = 100 - (100 / (1 + rs))
 
     value = rsi.iloc[-1]
-    return round(float(value), 2) if pd.notna(value) else None
+
+    if pd.isna(value):
+        return None
+
+    return round(float(value), 2)
 
 
 def calculate_atr(df: pd.DataFrame, period: int = 14) -> dict:
@@ -78,6 +98,14 @@ def calculate_atr(df: pd.DataFrame, period: int = 14) -> dict:
 
     atr = true_range.ewm(alpha=1 / period, adjust=False).mean().iloc[-1]
     price = close.iloc[-1]
+
+    if price <= 0 or pd.isna(atr):
+        return {
+            "atr_14d": None,
+            "atr_pct_14d": None,
+            "volatility": "⚪ unavailable",
+        }
+
     atr_pct = (atr / price) * 100
 
     if atr_pct < 2:
@@ -110,6 +138,7 @@ def calculate_pi_cycle(df: pd.DataFrame) -> dict:
         }
 
     close = df["close"]
+
     ma_111 = close.rolling(111).mean().iloc[-1]
     ma_350x2 = close.rolling(350).mean().iloc[-1] * 2
 
@@ -149,7 +178,10 @@ def calculate_pi_cycle(df: pd.DataFrame) -> dict:
 
 
 async def build_coin_indicators(symbol: str) -> dict:
-    df = await get_daily_ohlc(symbol)
+    df = await get_daily_ohlc(symbol, days=365)
+
+    if df.empty:
+        raise Exception(f"Empty indicator dataframe for {symbol}")
 
     atr = calculate_atr(df)
     rsi = calculate_rsi(df["close"])
@@ -163,10 +195,10 @@ async def build_coin_indicators(symbol: str) -> dict:
         "atr_14d": atr["atr_14d"],
         "atr_pct_14d": atr["atr_pct_14d"],
         "volatility": atr["volatility"],
-        "indicator_method": "coingecko_daily_ohlc_wilder_rsi_atr",
+        "indicator_method": "coingecko_market_chart_daily_wilder_rsi_atr",
     }
 
 
 async def build_btc_pi_cycle() -> dict:
-    df = await get_daily_ohlc("BTC")
+    df = await get_daily_ohlc("BTC", days=365)
     return calculate_pi_cycle(df)
