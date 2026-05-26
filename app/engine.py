@@ -132,10 +132,6 @@ def classify_liquidity(symbol, coin):
     volume = safe_float(coin.get("usd_24h_vol"))
     market_cap = safe_float(coin.get("usd_market_cap"))
 
-    def classify_liquidity(symbol, coin):
-    volume = safe_float(coin.get("usd_24h_vol"))
-    market_cap = safe_float(coin.get("usd_market_cap"))
-
     if volume <= 250000:
         return "🔴 severe"
 
