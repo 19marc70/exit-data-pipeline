@@ -16,7 +16,12 @@ COINGECKO_IDS = {
 
 @lru_cache(maxsize=20)
 def get_coin_id(symbol):
-    return COINGECKO_IDS[symbol.upper()]
+    symbol = symbol.upper()
+
+    if symbol not in COINGECKO_IDS:
+        raise ValueError(f"Unknown symbol: {symbol}")
+
+    return COINGECKO_IDS[symbol]
 
 
 async def fetch_market_chart(symbol, days=90):
@@ -31,14 +36,35 @@ async def fetch_market_chart(symbol, days=90):
     }
 
     async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.get(url, params=params)
+        last_error = None
 
-        if response.status_code == 429:
-            await asyncio.sleep(15)
-            response = await client.get(url, params=params)
+        for attempt in range(3):
+            try:
+                response = await client.get(url, params=params)
 
-        response.raise_for_status()
-        return response.json()
+                if response.status_code == 429:
+                    await asyncio.sleep(10 + attempt * 10)
+                    continue
+
+                if response.status_code >= 400:
+                    raise Exception(
+                        f"HTTP {response.status_code}: {response.text[:300]}"
+                    )
+
+                data = response.json()
+
+                prices = data.get("prices", [])
+
+                if not prices:
+                    raise Exception(f"No prices returned for {symbol}")
+
+                return data
+
+            except Exception as e:
+                last_error = e
+                await asyncio.sleep(3 + attempt * 3)
+
+        raise Exception(f"CoinGecko market_chart failed for {symbol}: {last_error}")
 
 
 async def get_daily_ohlc(symbol, days=90):
@@ -46,12 +72,22 @@ async def get_daily_ohlc(symbol, days=90):
     prices = data.get("prices", [])
 
     if len(prices) < 30:
-        raise Exception(f"Not enough candles for {symbol}")
+        raise Exception(f"Not enough candles for {symbol}: {len(prices)}")
 
     df = pd.DataFrame(prices, columns=["timestamp", "close"])
 
-    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
     df["close"] = pd.to_numeric(df["close"], errors="coerce")
+
+    df = (
+        df.dropna()
+        .sort_values("timestamp")
+        .drop_duplicates("timestamp")
+        .reset_index(drop=True)
+    )
+
+    if len(df) < 30:
+        raise Exception(f"Not enough clean candles for {symbol}: {len(df)}")
 
     df["open"] = df["close"].shift(1)
     df["open"] = df["open"].fillna(df["close"])
@@ -59,11 +95,16 @@ async def get_daily_ohlc(symbol, days=90):
     df["high"] = df[["open", "close"]].max(axis=1)
     df["low"] = df[["open", "close"]].min(axis=1)
 
-    return df.dropna().reset_index(drop=True)
+    return df
 
 
 def calculate_rsi(close, period=14):
     if close is None or len(close) < period + 10:
+        return None
+
+    close = pd.to_numeric(close, errors="coerce").dropna()
+
+    if len(close) < period + 10:
         return None
 
     delta = close.diff()
@@ -74,7 +115,9 @@ def calculate_rsi(close, period=14):
     avg_gain = gain.ewm(alpha=1 / period, adjust=False).mean()
     avg_loss = loss.ewm(alpha=1 / period, adjust=False).mean()
 
-    rs = avg_gain / avg_loss.replace(0, math.nan)
+    avg_loss = avg_loss.replace(0, math.nan)
+
+    rs = avg_gain / avg_loss
     rsi = 100 - (100 / (1 + rs))
 
     value = rsi.iloc[-1]
@@ -93,9 +136,9 @@ def calculate_atr(df, period=14):
             "volatility": "⚪ insufficient_data",
         }
 
-    high = df["high"]
-    low = df["low"]
-    close = df["close"]
+    high = pd.to_numeric(df["high"], errors="coerce")
+    low = pd.to_numeric(df["low"], errors="coerce")
+    close = pd.to_numeric(df["close"], errors="coerce")
 
     prev_close = close.shift()
 
@@ -108,10 +151,12 @@ def calculate_atr(df, period=14):
         axis=1,
     ).max(axis=1)
 
-    atr = tr.ewm(alpha=1 / period, adjust=False).mean().iloc[-1]
+    atr_series = tr.ewm(alpha=1 / period, adjust=False).mean()
+
+    atr = atr_series.iloc[-1]
     price = close.iloc[-1]
 
-    if price <= 0 or pd.isna(atr):
+    if pd.isna(atr) or pd.isna(price) or price <= 0:
         return {
             "atr_14d": None,
             "atr_pct_14d": None,
@@ -137,13 +182,16 @@ def calculate_atr(df, period=14):
 
 
 async def build_coin_indicators(symbol):
+    symbol = symbol.upper()
+
     try:
         df = await get_daily_ohlc(symbol, 90)
-        atr = calculate_atr(df)
+
         rsi = calculate_rsi(df["close"])
+        atr = calculate_atr(df)
 
         return {
-            "symbol": symbol.upper(),
+            "symbol": symbol,
             "timeframe": "1d",
             "candles_used": len(df),
             "current_price": round(float(df["close"].iloc[-1]), 6),
@@ -151,12 +199,14 @@ async def build_coin_indicators(symbol):
             "atr_14d": atr["atr_14d"],
             "atr_pct_14d": atr["atr_pct_14d"],
             "volatility": atr["volatility"],
-            "indicator_method": "coingecko_cached_retry_v3",
+            "indicator_method": "coingecko_market_chart_retry_v4",
         }
 
     except Exception as e:
+        print(f"INDICATOR ERROR {symbol}: {str(e)}")
+
         return {
-            "symbol": symbol.upper(),
+            "symbol": symbol,
             "timeframe": "1d",
             "candles_used": None,
             "current_price": None,
@@ -187,12 +237,24 @@ async def build_btc_pi_cycle():
 
         close = df["close"]
 
-        ma111 = close.rolling(111).mean().iloc[-1]
-        ma350x2 = close.rolling(350).mean().iloc[-1] * 2
+        ma_111 = close.rolling(111).mean().iloc[-1]
+        ma_350x2 = close.rolling(350).mean().iloc[-1] * 2
 
-        distance_pct = ((ma350x2 - ma111) / ma111) * 100
+        if pd.isna(ma_111) or pd.isna(ma_350x2) or ma_111 <= 0:
+            return {
+                "status": "unknown",
+                "cycle_state": "⚪ unavailable",
+                "ma_111": None,
+                "ma_350x2": None,
+                "distance_pct": None,
+                "top_risk": False,
+                "triggered": False,
+                "method": "pi_cycle_111dma_vs_350dma_x2",
+            }
 
-        if ma111 >= ma350x2:
+        distance_pct = ((ma_350x2 - ma_111) / ma_111) * 100
+
+        if ma_111 >= ma_350x2:
             status = "top_risk"
             state = "🔴 TOP_RISK"
             top_risk = True
@@ -216,8 +278,8 @@ async def build_btc_pi_cycle():
         return {
             "status": status,
             "cycle_state": state,
-            "ma_111": round(float(ma111), 2),
-            "ma_350x2": round(float(ma350x2), 2),
+            "ma_111": round(float(ma_111), 2),
+            "ma_350x2": round(float(ma_350x2), 2),
             "distance_pct": round(float(distance_pct), 2),
             "top_risk": top_risk,
             "triggered": triggered,
@@ -225,6 +287,8 @@ async def build_btc_pi_cycle():
         }
 
     except Exception as e:
+        print(f"PI CYCLE ERROR: {str(e)}")
+
         return {
             "status": "unknown",
             "cycle_state": "⚪ unavailable",
