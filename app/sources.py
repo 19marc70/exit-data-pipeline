@@ -1,19 +1,18 @@
 import os
 import time
+import asyncio
 import httpx
 from datetime import datetime, timezone
 
+from .indicators import build_coin_indicators, build_btc_pi_cycle
+
+
 CACHE = {
-    "snapshot": {
-        "timestamp": "bootstrap",
-        "status": "bootstrap_cache",
-        "coins": {},
-        "btc": {}
-    },
+    "snapshot": None,
     "timestamp": 0
 }
 
-CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "7200"))
+CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "900"))
 COINGLASS_API_KEY = os.getenv("COINGLASS_API_KEY")
 
 COINS = {
@@ -35,6 +34,20 @@ HYPERLIQUID_SYMBOLS = {
     "ONDO": "ONDO",
     "AERO": "AERO",
     "CFG": "CFG"
+}
+
+HOLDINGS = {
+    "XRP": float(os.getenv("HOLDING_XRP", "11093.5")),
+    "ONDO": float(os.getenv("HOLDING_ONDO", "22397.63463725")),
+    "AERO": float(os.getenv("HOLDING_AERO", "10251.39604089")),
+    "CFG": float(os.getenv("HOLDING_CFG", "10667.05368724")),
+}
+
+AVG_ENTRY = {
+    "XRP": float(os.getenv("AVG_ENTRY_XRP", "0.9699")),
+    "ONDO": float(os.getenv("AVG_ENTRY_ONDO", "0.5018")),
+    "AERO": float(os.getenv("AVG_ENTRY_AERO", "0.5379")),
+    "CFG": float(os.getenv("AVG_ENTRY_CFG", "0.2268")),
 }
 
 
@@ -84,31 +97,6 @@ def classify_trend(change_24h):
     return "🟡 sideways"
 
 
-def synthetic_rsi(change_24h):
-    if change_24h is None:
-        return 50
-    return round(max(5, min(95, 50 + change_24h * 3)), 2)
-
-
-def synthetic_atr(price, change_24h):
-    if price is None or change_24h is None:
-        return 0
-    return round(price * abs(change_24h) / 100, 6)
-
-
-def classify_volatility(price, atr):
-    if price is None or atr is None or price == 0:
-        return "⚪ unavailable"
-    atr_pct = atr / price * 100
-    if atr_pct >= 10:
-        return "🔴 high"
-    if atr_pct >= 5:
-        return "🟠 elevated"
-    if atr_pct >= 2:
-        return "🟡 medium"
-    return "🟢 low"
-
-
 async def get_prices():
     return await get_json(
         "https://api.coingecko.com/api/v3/simple/price",
@@ -129,69 +117,25 @@ async def get_btc_dominance():
     return data.get("data", {}).get("market_cap_percentage", {}).get("btc")
 
 
-async def get_btc_price_history():
-    data = await get_json(
-        "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart",
-        {
-            "vs_currency": "usd",
-            "days": "max",
-            "interval": "daily"
-        },
-    )
+async def get_fear_greed():
+    data = await get_json("https://api.alternative.me/fng/")
 
     if not data:
-        return []
-
-    return [
-        float(x[1])
-        for x in data.get("prices", [])
-        if isinstance(x, list) and len(x) >= 2
-    ]
-
-    return closes
-
-
-def calculate_pi_cycle(closes):
-    if not closes or len(closes) < 350:
         return {
-            "status": "unknown",
-            "cycle_state": "⚪ insufficient_history",
-            "distance_pct": None,
-            "ma_111": None,
-            "ma_350x2": None,
-            "top_risk": False,
-            "method": "pi_cycle_111dma_vs_350dma_x2",
+            "value": None,
+            "classification": "unknown"
         }
 
-    ma_111 = sum(closes[-111:]) / 111
-    ma_350x2 = (sum(closes[-350:]) / 350) * 2
-    distance_pct = ((ma_350x2 - ma_111) / ma_111) * 100
+    item = data.get("data", [{}])[0]
 
-    if distance_pct <= 0:
-        status = "top_risk"
-        state = "🔴 TOP_RISK"
-        top_risk = True
-    elif distance_pct <= 10:
-        status = "late_cycle"
-        state = "🟠 LATE_CYCLE"
-        top_risk = False
-    elif distance_pct <= 25:
-        status = "mid_late_cycle"
-        state = "🟡 MID_LATE_CYCLE"
-        top_risk = False
-    else:
-        status = "early_mid_cycle"
-        state = "🟢 EARLY_MID_CYCLE"
-        top_risk = False
+    try:
+        value = int(item.get("value"))
+    except Exception:
+        value = None
 
     return {
-        "status": status,
-        "cycle_state": state,
-        "distance_pct": round(distance_pct, 2),
-        "ma_111": round(ma_111, 2),
-        "ma_350x2": round(ma_350x2, 2),
-        "top_risk": top_risk,
-        "method": "pi_cycle_111dma_vs_350dma_x2",
+        "value": value,
+        "classification": item.get("value_classification")
     }
 
 
@@ -245,9 +189,7 @@ def extract_latest_numeric(raw):
 
 
 async def get_cbbi_bundle():
-    data = await get_json(
-        "https://colintalkscrypto.com/cbbi/data/latest.json"
-    )
+    data = await get_json("https://colintalkscrypto.com/cbbi/data/latest.json")
 
     if not data:
         return {
@@ -465,7 +407,7 @@ def build_cycle_score(pi_cycle, cbbi, macro_intelligence):
     score = 0
     reasons = []
 
-    if pi_cycle.get("top_risk"):
+    if pi_cycle.get("top_risk") or pi_cycle.get("triggered"):
         score -= 30
         reasons.append("pi_cycle_top_risk")
     elif pi_cycle.get("status") == "late_cycle":
@@ -512,28 +454,6 @@ def build_cycle_score(pi_cycle, cbbi, macro_intelligence):
     }
 
 
-async def get_fear_greed():
-    data = await get_json("https://api.alternative.me/fng/")
-
-    if not data:
-        return {
-            "value": None,
-            "classification": "unknown"
-        }
-
-    item = data.get("data", [{}])[0]
-
-    try:
-        value = int(item.get("value"))
-    except Exception:
-        value = None
-
-    return {
-        "value": value,
-        "classification": item.get("value_classification")
-    }
-
-
 async def get_coinglass_funding(symbol):
     if not COINGLASS_API_KEY:
         return {
@@ -559,7 +479,6 @@ async def get_coinglass_funding(symbol):
 
     try:
         rows = data.get("data")
-
         if isinstance(rows, dict):
             rows = rows.get("list", [])
 
@@ -576,7 +495,6 @@ async def get_coinglass_funding(symbol):
 
         if isinstance(last, list):
             value = float(last[-1])
-
         elif isinstance(last, dict):
             for key in ["close", "fundingRate", "funding_rate", "rate", "value"]:
                 if last.get(key) is not None:
@@ -630,7 +548,6 @@ async def get_coinglass_open_interest(symbol):
 
     try:
         rows = data.get("data")
-
         if isinstance(rows, dict):
             rows = rows.get("list", [])
 
@@ -799,7 +716,6 @@ def classify_derivatives(funding, open_interest):
 
     elif oi_available:
         reasons.append("oi_available_no_24h_change")
-
     else:
         reasons.append("oi_missing")
 
@@ -809,73 +725,132 @@ def classify_derivatives(funding, open_interest):
     }
 
 
+async def build_derivatives(symbol, hyperliquid_contexts):
+    funding = await get_coinglass_funding(DERIVATIVE_SYMBOLS.get(symbol))
+    open_interest = await get_coinglass_open_interest(DERIVATIVE_SYMBOLS.get(symbol))
+    source_priority = "coinglass"
+
+    if not funding.get("available") or not open_interest.get("available"):
+        fallback = get_hyperliquid_derivatives(symbol, hyperliquid_contexts)
+
+        if not funding.get("available") and fallback["funding"].get("available"):
+            funding = fallback["funding"]
+            source_priority = "hyperliquid_fallback"
+
+        if not open_interest.get("available") and fallback["open_interest"].get("available"):
+            open_interest = fallback["open_interest"]
+            source_priority = "hyperliquid_fallback"
+
+    return {
+        "source_priority": source_priority,
+        "funding": funding,
+        "open_interest": open_interest,
+        "state": classify_derivatives(funding, open_interest),
+    }
+
+
 async def build_exit_snapshot():
     if cache_valid():
         cached = CACHE["snapshot"].copy()
         cached["cache_mode"] = "fresh_cache"
         return cached
 
-    prices = await get_prices()
-    btc_dominance = await get_btc_dominance()
-    fear_greed = await get_fear_greed()
-    btc_history = await get_btc_price_history()
-    pi_cycle = calculate_pi_cycle(btc_history)
+    prices, btc_dominance, fear_greed, cbbi_bundle, pi_cycle, hyperliquid_contexts = await asyncio.gather(
+        get_prices(),
+        get_btc_dominance(),
+        get_fear_greed(),
+        get_cbbi_bundle(),
+        build_btc_pi_cycle(),
+        get_hyperliquid_contexts(),
+    )
 
-    cbbi_bundle = await get_cbbi_bundle()
     cbbi = cbbi_bundle.get("cbbi", {})
     macro_components = cbbi_bundle.get("macro_components", {})
     macro_intelligence = build_macro_intelligence(macro_components)
     cycle_intelligence = build_cycle_score(pi_cycle, cbbi, macro_intelligence)
 
-    hyperliquid_contexts = await get_hyperliquid_contexts()
-
     if not prices:
-        cached = CACHE["snapshot"].copy()
-        cached["timestamp"] = now_iso()
-        cached["status"] = "degraded"
-        cached["cache_mode"] = "fallback_cache_active"
-        cached["api_error"] = "coingecko_unavailable"
-        return cached
+        fallback = CACHE["snapshot"] or {
+            "timestamp": now_iso(),
+            "status": "degraded",
+            "coins": {},
+            "btc": {},
+            "missing_data": ["coingecko_unavailable"]
+        }
+        fallback["timestamp"] = now_iso()
+        fallback["status"] = "degraded"
+        fallback["cache_mode"] = "fallback_cache_active"
+        fallback["api_error"] = "coingecko_unavailable"
+        return fallback
+
+    symbols = list(COINS.keys())
+
+    indicator_results = await asyncio.gather(
+        *[build_coin_indicators(symbol) for symbol in symbols],
+        return_exceptions=True
+    )
+
+    derivative_results = await asyncio.gather(
+        *[build_derivatives(symbol, hyperliquid_contexts) for symbol in symbols],
+        return_exceptions=True
+    )
 
     coins = {}
+    coin_indicators = {}
+    missing_data = []
 
-    for symbol, coin_id in COINS.items():
-        base = prices.get(coin_id, {})
+    for symbol, indicator_result, derivative_result in zip(symbols, indicator_results, derivative_results):
+        coin_id = COINS[symbol]
+        base = prices.get(coin_id, {}) or {}
 
-        price = base.get("usd", 0)
-        change_24h = base.get("usd_24h_change", 0)
+        price = base.get("usd")
+        change_24h = base.get("usd_24h_change")
 
-        funding = await get_coinglass_funding(DERIVATIVE_SYMBOLS.get(symbol))
-        open_interest = await get_coinglass_open_interest(DERIVATIVE_SYMBOLS.get(symbol))
-        source_priority = "coinglass"
+        if isinstance(indicator_result, Exception):
+            missing_data.append(f"{symbol}_indicator_error")
+            indicator = {
+                "symbol": symbol,
+                "current_price": price,
+                "rsi_14d": None,
+                "atr_14d": None,
+                "atr_pct_14d": None,
+                "volatility": "⚪ unavailable",
+                "indicator_method": "indicator_error",
+                "error": str(indicator_result),
+            }
+        else:
+            indicator = indicator_result
 
-        if not funding.get("available") or not open_interest.get("available"):
-            fallback = get_hyperliquid_derivatives(symbol, hyperliquid_contexts)
+        if isinstance(derivative_result, Exception):
+            missing_data.append(f"{symbol}_derivatives_error")
+            derivatives = {
+                "source_priority": "unavailable",
+                "funding": {"available": False, "reason": "error", "value": None},
+                "open_interest": {"available": False, "reason": "error", "value": None},
+                "state": {"leverage_risk": "⚪ unknown", "reasons": ["derivatives_error"]},
+            }
+        else:
+            derivatives = derivative_result
 
-            if not funding.get("available") and fallback["funding"].get("available"):
-                funding = fallback["funding"]
-                source_priority = "hyperliquid_fallback"
+        trend = classify_trend(change_24h)
 
-            if not open_interest.get("available") and fallback["open_interest"].get("available"):
-                open_interest = fallback["open_interest"]
-                source_priority = "hyperliquid_fallback"
-
-        atr = synthetic_atr(price, change_24h)
-
-        coins[symbol] = {
+        coin = {
             **base,
-            "rsi_14d": synthetic_rsi(change_24h),
-            "atr_14d": atr,
-            "volatility": classify_volatility(price, atr),
-            "trend": classify_trend(change_24h),
-            "indicator_method": "synthetic_proxy_model",
-            "derivatives": {
-                "source_priority": source_priority,
-                "funding": funding,
-                "open_interest": open_interest,
-                "state": classify_derivatives(funding, open_interest),
-            },
+            "current_price": indicator.get("current_price") or price,
+            "rsi_14d": indicator.get("rsi_14d"),
+            "atr_14d": indicator.get("atr_14d"),
+            "atr_pct_14d": indicator.get("atr_pct_14d"),
+            "volatility": indicator.get("volatility"),
+            "trend": trend,
+            "indicator_method": indicator.get("indicator_method", "daily_ohlc_rsi_atr"),
+            "timeframe": indicator.get("timeframe", "1d"),
+            "candles_used": indicator.get("candles_used"),
+            "liquidity": "🟢 strong" if base.get("usd_24h_vol", 0) >= 5_000_000 else "🔴 severe",
+            "derivatives": derivatives,
         }
+
+        coins[symbol] = coin
+        coin_indicators[symbol] = coin
 
     altseason_index = round(max(0, 100 - btc_dominance), 2) if btc_dominance is not None else None
     stablecoin_regime = "🟡 neutral"
@@ -887,8 +862,6 @@ async def build_exit_snapshot():
             stablecoin_regime = "🟢 defensive_rotation"
         elif fg >= 75:
             stablecoin_regime = "🔴 euphoric_risk"
-
-    missing_data = []
 
     if not cbbi.get("available"):
         missing_data.append("cbbi_live_parse_or_endpoint")
@@ -908,7 +881,11 @@ async def build_exit_snapshot():
         "cycle_intelligence_enabled": True,
         "macro_intelligence_enabled": True,
         "cbbi_enabled": cbbi.get("available"),
+        "holdings": HOLDINGS,
+        "avg_entry": AVG_ENTRY,
         "coins": coins,
+        "coin_indicators": coin_indicators,
+        "pi_cycle": pi_cycle,
         "btc": {
             "dominance": btc_dominance,
             "fear_greed": fear_greed,
