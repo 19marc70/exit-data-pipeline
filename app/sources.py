@@ -770,14 +770,14 @@ macro_components = cbbi_bundle.get("macro_components", {})
 macro_intelligence = build_macro_intelligence(macro_components)
 cycle_intelligence = build_cycle_score(pi_cycle, cbbi, macro_intelligence)
 
-if not prices:
-    fallback = CACHE["snapshot"] or {
-        "timestamp": now_iso(),
-        "status": "degraded",
-        "coins": {},
-        "btc": {},
-        "missing_data": ["coingecko_unavailable"]
-    }
+    if not prices:
+        fallback = CACHE["snapshot"] or {
+            "timestamp": now_iso(),
+            "status": "degraded",
+            "coins": {},
+            "btc": {},
+            "missing_data": ["coingecko_unavailable"]
+        }
 
         fallback["timestamp"] = now_iso()
         fallback["status"] = "degraded"
