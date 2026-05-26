@@ -261,8 +261,7 @@ def score_market_structure(coin):
         score -= 3
         reasons.append("rsi_weak")
 
-else:
-    reasons.append("rsi_unavailable")
+
 
     return score, reasons
 
