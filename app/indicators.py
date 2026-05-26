@@ -258,7 +258,7 @@ async def build_btc_pi_cycle():
 
         params = {
             "vs_currency": "usd",
-            "days": "max",
+            "days": "3650",
             "interval": "daily",
         }
 
