@@ -36,43 +36,37 @@ async def fetch_market_chart(symbol, days=90):
     }
 
     async with httpx.AsyncClient(timeout=30) as client:
-        last_error = None
-
         for attempt in range(3):
             try:
                 response = await client.get(url, params=params)
 
                 if response.status_code == 429:
-                    await asyncio.sleep(10 + attempt * 10)
+                    print(f"RATE LIMIT {symbol}")
+                    await asyncio.sleep(10 * (attempt + 1))
                     continue
 
-                if response.status_code >= 400:
-                    raise Exception(
-                        f"HTTP {response.status_code}: {response.text[:300]}"
-                    )
+                response.raise_for_status()
 
                 data = response.json()
-
                 prices = data.get("prices", [])
 
-                if not prices:
-                    raise Exception(f"No prices returned for {symbol}")
+                if len(prices) < 30:
+                    raise Exception(f"Not enough prices for {symbol}: {len(prices)}")
 
                 return data
 
             except Exception as e:
-                last_error = e
-                await asyncio.sleep(3 + attempt * 3)
+                print(f"FETCH ERROR {symbol}: {str(e)}")
 
-        raise Exception(f"CoinGecko market_chart failed for {symbol}: {last_error}")
+                if attempt < 2:
+                    await asyncio.sleep(5 * (attempt + 1))
+                else:
+                    raise e
 
 
 async def get_daily_ohlc(symbol, days=90):
     data = await fetch_market_chart(symbol, days)
     prices = data.get("prices", [])
-
-    if len(prices) < 30:
-        raise Exception(f"Not enough candles for {symbol}: {len(prices)}")
 
     df = pd.DataFrame(prices, columns=["timestamp", "close"])
 
@@ -199,7 +193,7 @@ async def build_coin_indicators(symbol):
             "atr_14d": atr["atr_14d"],
             "atr_pct_14d": atr["atr_pct_14d"],
             "volatility": atr["volatility"],
-            "indicator_method": "coingecko_market_chart_retry_v4",
+            "indicator_method": "coingecko_market_chart_retry_v5",
         }
 
     except Exception as e:
