@@ -132,14 +132,19 @@ def classify_liquidity(symbol, coin):
     volume = safe_float(coin.get("usd_24h_vol"))
     market_cap = safe_float(coin.get("usd_market_cap"))
 
-    if symbol == "CFG":
+    def classify_liquidity(symbol, coin):
+    volume = safe_float(coin.get("usd_24h_vol"))
+    market_cap = safe_float(coin.get("usd_market_cap"))
+
+    if volume <= 250000:
         return "🔴 severe"
-    if volume <= 500_000:
-        return "🔴 severe"
-    if volume <= 5_000_000:
+
+    if volume <= 2500000:
         return "🟡 moderate"
+
     if market_cap > 0 and volume / market_cap < 0.01:
         return "🟡 moderate"
+
     return "🟢 strong"
 
 
