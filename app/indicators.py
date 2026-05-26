@@ -1,344 +1,172 @@
-ENGINE_VERSION = "v10.1-corrected-rsi-atr-picycle"
+import math
+import httpx
+import pandas as pd
 
 
-def safe_float(value, default=0.0):
-    try:
-        if value is None:
-            return default
-        return float(value)
-    except Exception:
-        return default
+COINGECKO_IDS = {
+    "BTC": "bitcoin",
+    "XRP": "ripple",
+    "ONDO": "ondo-finance",
+    "AERO": "aerodrome-finance",
+    "CFG": "centrifuge",
+}
 
 
-def rsi_state(rsi):
-    if rsi is None:
-        return "⚪ unavailable"
-    if rsi < 30:
-        return "🟢 oversold"
-    if rsi < 55:
-        return "🟢 neutral"
-    if rsi < 70:
-        return "🟡 elevated"
-    if rsi < 80:
-        return "🟠 overbought"
-    return "🔴 extreme_overbought"
+async def get_daily_ohlc(symbol: str, days: int = 365) -> pd.DataFrame:
+    symbol = symbol.upper()
+    coin_id = COINGECKO_IDS[symbol]
+
+    url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/ohlc"
+    params = {"vs_currency": "usd", "days": "365"}
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get(url, params=params)
+        response.raise_for_status()
+        data = response.json()
+
+    df = pd.DataFrame(data, columns=["timestamp", "open", "high", "low", "close"])
+    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+    df = df.sort_values("timestamp").drop_duplicates("timestamp")
+
+    for col in ["open", "high", "low", "close"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    return df.dropna().reset_index(drop=True)
 
 
-def coin_score_from_indicators(rsi, volatility):
-    score = 0
-    confirmations = []
-    blockers = []
+def calculate_rsi(close: pd.Series, period: int = 14) -> float | None:
+    close = close.dropna()
 
-    if rsi is None:
-        blockers.append("rsi_unavailable")
-    elif rsi >= 80:
-        score += 30
-        confirmations.append("rsi_extreme_overbought")
-    elif rsi >= 70:
-        score += 20
-        confirmations.append("rsi_overbought")
-    elif rsi >= 60:
-        score += 10
-        confirmations.append("rsi_elevated")
+    if len(close) < period + 50:
+        return None
 
-    if "🔴" in volatility:
-        score += 20
-        confirmations.append("high_volatility")
-    elif "🟡" in volatility:
-        score += 10
-        confirmations.append("medium_volatility")
+    delta = close.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
 
-    return score, confirmations, blockers
+    avg_gain = gain.ewm(alpha=1 / period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1 / period, adjust=False).mean()
+
+    rs = avg_gain / avg_loss.replace(0, math.nan)
+    rsi = 100 - (100 / (1 + rs))
+
+    value = rsi.iloc[-1]
+    return round(float(value), 2) if pd.notna(value) else None
 
 
-def signal_from_score(score):
-    if score >= 70:
-        return "SELL_REVIEW"
-    if score >= 50:
-        return "LIGHT_TRIM_WATCH"
-    return "HOLD"
-
-
-def sell_pct_from_score(score):
-    if score >= 80:
-        return 15
-    if score >= 70:
-        return 10
-    if score >= 50:
-        return 5
-    return 0
-
-
-def build_portfolio(snapshot):
-    holdings = snapshot.get("holdings", {})
-    avg_entry = snapshot.get("avg_entry", {})
-    indicators = snapshot.get("coin_indicators", {})
-
-    positions = {}
-    total_value = 0
-    total_cost = 0
-
-    for symbol, qty in holdings.items():
-        price = safe_float(indicators.get(symbol, {}).get("current_price"))
-        entry = safe_float(avg_entry.get(symbol))
-        qty = safe_float(qty)
-
-        market_value = qty * price
-        cost_basis = qty * entry
-        pnl = market_value - cost_basis
-        pnl_pct = (pnl / cost_basis * 100) if cost_basis else 0
-
-        total_value += market_value
-        total_cost += cost_basis
-
-        positions[symbol] = {
-            "qty": round(qty, 8),
-            "current_price": round(price, 6),
-            "avg_entry": round(entry, 6),
-            "market_value": round(market_value, 2),
-            "cost_basis": round(cost_basis, 2),
-            "unrealized_pnl": round(pnl, 2),
-            "pnl_pct": round(pnl_pct, 2),
+def calculate_atr(df: pd.DataFrame, period: int = 14) -> dict:
+    if len(df) < period + 50:
+        return {
+            "atr_14d": None,
+            "atr_pct_14d": None,
+            "volatility": "⚪ insufficient_data",
         }
 
-    for symbol, pos in positions.items():
-        allocation = (pos["market_value"] / total_value * 100) if total_value else 0
-        pos["allocation_pct"] = round(allocation, 2)
+    high = df["high"]
+    low = df["low"]
+    close = df["close"]
+    prev_close = close.shift(1)
 
-        if allocation > 45:
-            pos["risk_state"] = "🔴 concentrated"
-        elif allocation > 30:
-            pos["risk_state"] = "🟡 elevated"
-        else:
-            pos["risk_state"] = "🟢 normal"
+    true_range = pd.concat(
+        [
+            high - low,
+            (high - prev_close).abs(),
+            (low - prev_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
 
-    largest_symbol = None
-    largest_pct = 0
+    atr = true_range.ewm(alpha=1 / period, adjust=False).mean().iloc[-1]
+    price = close.iloc[-1]
+    atr_pct = (atr / price) * 100
 
-    for symbol, pos in positions.items():
-        if pos["allocation_pct"] > largest_pct:
-            largest_symbol = symbol
-            largest_pct = pos["allocation_pct"]
-
-    total_pnl = total_value - total_cost
-    total_pnl_pct = (total_pnl / total_cost * 100) if total_cost else 0
-
-    if largest_pct > 45:
-        state = "🔴 concentration_risk"
-    elif largest_pct > 30:
-        state = "🟡 moderate_concentration"
+    if atr_pct < 2:
+        volatility = "🟢 low"
+    elif atr_pct < 5:
+        volatility = "🟡 medium"
+    elif atr_pct < 8:
+        volatility = "🟠 elevated"
     else:
-        state = "🟢 balanced"
+        volatility = "🔴 high"
 
     return {
-        "total_portfolio_value": round(total_value, 2),
-        "total_cost_basis": round(total_cost, 2),
-        "total_unrealized_pnl": round(total_pnl, 2),
-        "portfolio_pnl_pct": round(total_pnl_pct, 2),
-        "portfolio_risk": {
-            "largest_position": largest_symbol,
-            "largest_position_pct": round(largest_pct, 2),
-            "state": state,
-        },
-        "positions": positions,
-    }
-
-
-def build_signal(symbol, snapshot, portfolio):
-    indicators = snapshot.get("coin_indicators", {}).get(symbol, {})
-    position = portfolio.get("positions", {}).get(symbol, {})
-
-    rsi = indicators.get("rsi_14d")
-    atr = indicators.get("atr_14d")
-    atr_pct = indicators.get("atr_pct_14d")
-    volatility = indicators.get("volatility", "⚪ unavailable")
-
-    score, confirmations, blockers = coin_score_from_indicators(rsi, volatility)
-
-    if symbol == "XRP":
-        blockers.append("xrp_core_hold")
-        sell_pct = 0
-        signal = "CORE_HOLD"
-    else:
-        sell_pct = sell_pct_from_score(score)
-        signal = signal_from_score(score)
-
-    qty = safe_float(position.get("qty"))
-    sell_qty = qty * sell_pct / 100
-    max_daily_qty = qty * 0.15
-
-    if sell_qty > max_daily_qty:
-        sell_qty = max_daily_qty
-        confirmations.append("daily_sell_cap_applied")
-
-    return {
-        "signal": signal,
-        "score": round(score, 2),
-        "sell_pct": sell_pct,
-        "sell_qty": round(sell_qty, 6),
-        "target_total_sell_qty": round(qty * sell_pct / 100, 6),
-        "max_daily_qty": round(max_daily_qty, 6),
-        "trend": "⚪ not_calculated",
+        "atr_14d": round(float(atr), 6),
+        "atr_pct_14d": round(float(atr_pct), 2),
         "volatility": volatility,
-        "rsi_14d": rsi,
-        "atr_14d": atr,
-        "atr_pct_14d": atr_pct,
-        "liquidity": "⚪ not_calculated",
-        "execution_type": "hold" if sell_pct == 0 else "manual_review",
-        "confirmations": confirmations,
-        "blockers": blockers,
-        "portfolio_position": position,
-        "adaptive_execution": {
-            "slippage_risk": "manual_check_required",
-            "reasons": ["liquidity_not_connected"],
-        },
-        "derivatives": {
-            "state": {
-                "leverage_risk": "⚪ not_connected",
-            }
-        },
-        "interpretations": {
-            "coin_score": {
-                "label": signal,
-                "meaning": "Gebaseerd op gecorrigeerde daily RSI en ATR.",
-                "details": confirmations or ["geen directe risicosignalen"],
-            },
-            "rsi": {
-                "label": rsi_state(rsi),
-                "meaning": "RSI wordt berekend op daily candles met voldoende historie.",
-                "details": [f"RSI: {rsi}"],
-            },
-            "volatility": {
-                "label": volatility,
-                "meaning": "Gebaseerd op ATR% van de huidige prijs.",
-                "details": [f"ATR: {atr}", f"ATR%: {atr_pct}"],
-            },
-            "liquidity": {
-                "label": "⚪ not_connected",
-                "meaning": "Liquidity is nog niet gekoppeld aan live volume.",
-                "details": [],
-            },
-        },
     }
 
 
-def build_score_interpretation():
-    return {
-        "exit_zone": {
-            "label": "🟢 No exit zone",
-            "meaning": "Geen brede exit zolang meerdere categorieën niet bevestigen.",
-            "details": ["RSI/ATR zijn nu gecorrigeerd op daily candles."],
-        },
-        "cycle_score": {
-            "label": "🟡 Neutral",
-            "meaning": "Cycle-score gebruikt Pi Cycle als waarschuwing, niet als los verkoopsignaal.",
-            "details": [],
-        },
-        "cycle_state": {
-            "label": "Pi Cycle monitored",
-            "meaning": "Pi Cycle wordt berekend op BTC 111DMA versus 2x 350DMA.",
-            "details": [],
-        },
-        "macro_score": {
-            "label": "⚪ Not connected",
-            "meaning": "Macro-data is in deze versie niet live gekoppeld.",
-            "details": [],
-        },
-        "fear_greed": {
-            "label": "⚪ Not connected",
-            "meaning": "Fear & Greed is niet live gekoppeld in deze module.",
-            "details": [],
-        },
-        "portfolio_risk": {
-            "label": "Portfolio concentration check",
-            "meaning": "Risico wordt bepaald door grootste positie en allocatie.",
-            "details": [],
-        },
-        "legend": {
-            "exit_zone_score": [
-                {"range": "0-30", "meaning": "Geen exit-zone"},
-                {"range": "30-60", "meaning": "Waakzaam"},
-                {"range": "60-80", "meaning": "Exit-review"},
-                {"range": "80-100", "meaning": "Distributie-risico"},
-            ],
-            "cycle_score": [
-                {"range": "0-20", "meaning": "Geen top-signalen"},
-                {"range": "20-50", "meaning": "Neutraal"},
-                {"range": "50-80", "meaning": "Cycle warning"},
-                {"range": "80-100", "meaning": "Cycle top risk"},
-            ],
-            "coin_score": [
-                {"range": "0-49", "meaning": "Hold"},
-                {"range": "50-69", "meaning": "Trim watch"},
-                {"range": "70+", "meaning": "Sell review"},
-            ],
-            "rsi": [
-                {"range": "<30", "meaning": "Oversold"},
-                {"range": "30-55", "meaning": "Neutraal"},
-                {"range": "55-70", "meaning": "Verhoogd"},
-                {"range": "70-80", "meaning": "Overbought"},
-                {"range": ">80", "meaning": "Extreme overbought"},
-            ],
-        },
-    }
+def calculate_pi_cycle(df: pd.DataFrame) -> dict:
+    if len(df) < 350:
+        return {
+            "status": "unknown",
+            "cycle_state": "⚪ insufficient_history",
+            "ma_111": None,
+            "ma_350x2": None,
+            "distance_pct": None,
+            "top_risk": False,
+            "triggered": False,
+            "method": "pi_cycle_111dma_vs_350dma_x2",
+        }
 
+    close = df["close"]
+    ma_111 = close.rolling(111).mean().iloc[-1]
+    ma_350x2 = close.rolling(350).mean().iloc[-1] * 2
 
-def build_exit_engine(snapshot):
-    portfolio = build_portfolio(snapshot)
+    distance_pct = ((ma_350x2 - ma_111) / ma_111) * 100
 
-    signals = {}
-    for symbol in ["XRP", "ONDO", "AERO", "CFG"]:
-        signals[symbol] = build_signal(symbol, snapshot, portfolio)
-
-    pi_cycle = snapshot.get("pi_cycle", {})
-    pi_triggered = pi_cycle.get("triggered", False)
-
-    cycle_score = 40 if pi_triggered else 5
-
-    coin_risk_score = max([safe_float(c.get("score")) for c in signals.values()] or [0])
-    portfolio_risk_score = 15 if portfolio["portfolio_risk"]["largest_position_pct"] > 45 else 5
-
-    exit_zone_score = min(100, cycle_score + coin_risk_score + portfolio_risk_score)
-
-    if exit_zone_score >= 80:
-        global_action = "HEAVY_DISTRIBUTION"
-    elif exit_zone_score >= 60:
-        global_action = "PARTIAL_EXIT_ALLOWED"
-    elif exit_zone_score >= 40:
-        global_action = "LIGHT_TRIM_ALLOWED"
+    if ma_111 >= ma_350x2:
+        status = "top_risk"
+        state = "🔴 TOP_RISK"
+        top_risk = True
+        triggered = True
+    elif distance_pct <= 10:
+        status = "late_cycle"
+        state = "🟠 LATE_CYCLE"
+        top_risk = False
+        triggered = False
+    elif distance_pct <= 25:
+        status = "mid_late_cycle"
+        state = "🟡 MID_LATE_CYCLE"
+        top_risk = False
+        triggered = False
     else:
-        global_action = "NO_FULL_EXIT"
+        status = "early_mid_cycle"
+        state = "🟢 EARLY_MID_CYCLE"
+        top_risk = False
+        triggered = False
 
     return {
-        "engine_version": ENGINE_VERSION,
-        "timestamp": snapshot.get("timestamp"),
-        "global_action": global_action,
-        "exit_zone_score": round(exit_zone_score, 2),
-        "signals": signals,
-        "portfolio_intelligence": portfolio,
-        "missing_engine_data": snapshot.get("missing_data", []),
-        "score_components": {
-            "cycle_intelligence": {
-                "cycle_score": cycle_score,
-                "cycle_state": pi_cycle.get("cycle_state"),
-            },
-            "macro_intelligence": {
-                "macro_score": 0,
-                "macro_state": "⚪ not_connected",
-            },
-            "fear_greed": {
-                "value": None,
-                "classification": "not_connected",
-            },
-            "btc_dominance": None,
-            "cbbi": {
-                "value": None,
-            },
-            "pi_cycle": pi_cycle,
-            "macro_cycle_risk_score": cycle_score,
-            "market_structure_score": coin_risk_score,
-            "portfolio_risk_score": portfolio_risk_score,
-            "multi_category_confirmed": exit_zone_score >= 60,
-        },
-        "score_interpretation": build_score_interpretation(),
+        "status": status,
+        "cycle_state": state,
+        "ma_111": round(float(ma_111), 2),
+        "ma_350x2": round(float(ma_350x2), 2),
+        "distance_pct": round(float(distance_pct), 2),
+        "top_risk": top_risk,
+        "triggered": triggered,
+        "method": "pi_cycle_111dma_vs_350dma_x2",
     }
+
+
+async def build_coin_indicators(symbol: str) -> dict:
+    df = await get_daily_ohlc(symbol)
+
+    atr = calculate_atr(df)
+    rsi = calculate_rsi(df["close"])
+
+    return {
+        "symbol": symbol.upper(),
+        "timeframe": "1d",
+        "candles_used": len(df),
+        "current_price": round(float(df["close"].iloc[-1]), 6),
+        "rsi_14d": rsi,
+        "atr_14d": atr["atr_14d"],
+        "atr_pct_14d": atr["atr_pct_14d"],
+        "volatility": atr["volatility"],
+        "indicator_method": "coingecko_daily_ohlc_wilder_rsi_atr",
+    }
+
+
+async def build_btc_pi_cycle() -> dict:
+    df = await get_daily_ohlc("BTC")
+    return calculate_pi_cycle(df)
