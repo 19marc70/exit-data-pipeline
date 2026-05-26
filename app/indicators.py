@@ -1,4 +1,5 @@
 import math
+import asyncio
 import httpx
 import pandas as pd
 
@@ -12,23 +13,31 @@ COINGECKO_IDS = {
 }
 
 
-async def get_daily_ohlc(symbol: str, days: int = 365) -> pd.DataFrame:
-    symbol = symbol.upper()
-    coin_id = COINGECKO_IDS[symbol]
-
+async def fetch_market_chart(coin_id: str, days: str = "90") -> dict:
     url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
 
     params = {
         "vs_currency": "usd",
-        "days": str(days),
+        "days": days,
         "interval": "daily",
     }
 
     async with httpx.AsyncClient(timeout=30) as client:
         response = await client.get(url, params=params)
-        response.raise_for_status()
-        data = response.json()
 
+        if response.status_code == 429:
+            await asyncio.sleep(10)
+            response = await client.get(url, params=params)
+
+        response.raise_for_status()
+        return response.json()
+
+
+async def get_daily_ohlc(symbol: str, days: int = 90) -> pd.DataFrame:
+    symbol = symbol.upper()
+    coin_id = COINGECKO_IDS[symbol]
+
+    data = await fetch_market_chart(coin_id, days="90")
     prices = data.get("prices", [])
 
     if not prices:
@@ -53,7 +62,7 @@ async def get_daily_ohlc(symbol: str, days: int = 365) -> pd.DataFrame:
 def calculate_rsi(close: pd.Series, period: int = 14) -> float | None:
     close = close.dropna()
 
-    if len(close) < period + 50:
+    if len(close) < period + 30:
         return None
 
     delta = close.diff()
@@ -75,7 +84,7 @@ def calculate_rsi(close: pd.Series, period: int = 14) -> float | None:
 
 
 def calculate_atr(df: pd.DataFrame, period: int = 14) -> dict:
-    if len(df) < period + 50:
+    if len(df) < period + 30:
         return {
             "atr_14d": None,
             "atr_pct_14d": None,
@@ -124,7 +133,48 @@ def calculate_atr(df: pd.DataFrame, period: int = 14) -> dict:
     }
 
 
-def calculate_pi_cycle(df: pd.DataFrame) -> dict:
+async def build_coin_indicators(symbol: str) -> dict:
+    df = await get_daily_ohlc(symbol, days=90)
+
+    if df.empty:
+        raise Exception(f"Empty indicator dataframe for {symbol}")
+
+    atr = calculate_atr(df)
+    rsi = calculate_rsi(df["close"])
+
+    return {
+        "symbol": symbol.upper(),
+        "timeframe": "1d",
+        "candles_used": len(df),
+        "current_price": round(float(df["close"].iloc[-1]), 6),
+        "rsi_14d": rsi,
+        "atr_14d": atr["atr_14d"],
+        "atr_pct_14d": atr["atr_pct_14d"],
+        "volatility": atr["volatility"],
+        "indicator_method": "coingecko_market_chart_90d_wilder_rsi_atr_retry",
+    }
+
+
+async def build_btc_pi_cycle() -> dict:
+    data = await fetch_market_chart("bitcoin", days="365")
+    prices = data.get("prices", [])
+
+    if not prices:
+        return {
+            "status": "unknown",
+            "cycle_state": "⚪ unavailable",
+            "ma_111": None,
+            "ma_350x2": None,
+            "distance_pct": None,
+            "top_risk": False,
+            "triggered": False,
+            "method": "pi_cycle_111dma_vs_350dma_x2",
+        }
+
+    df = pd.DataFrame(prices, columns=["timestamp", "close"])
+    df["close"] = pd.to_numeric(df["close"], errors="coerce")
+    df = df.dropna()
+
     if len(df) < 350:
         return {
             "status": "unknown",
@@ -175,30 +225,3 @@ def calculate_pi_cycle(df: pd.DataFrame) -> dict:
         "triggered": triggered,
         "method": "pi_cycle_111dma_vs_350dma_x2",
     }
-
-
-async def build_coin_indicators(symbol: str) -> dict:
-    df = await get_daily_ohlc(symbol, days=365)
-
-    if df.empty:
-        raise Exception(f"Empty indicator dataframe for {symbol}")
-
-    atr = calculate_atr(df)
-    rsi = calculate_rsi(df["close"])
-
-    return {
-        "symbol": symbol.upper(),
-        "timeframe": "1d",
-        "candles_used": len(df),
-        "current_price": round(float(df["close"].iloc[-1]), 6),
-        "rsi_14d": rsi,
-        "atr_14d": atr["atr_14d"],
-        "atr_pct_14d": atr["atr_pct_14d"],
-        "volatility": atr["volatility"],
-        "indicator_method": "coingecko_market_chart_daily_wilder_rsi_atr",
-    }
-
-
-async def build_btc_pi_cycle() -> dict:
-    df = await get_daily_ohlc("BTC", days=365)
-    return calculate_pi_cycle(df)
