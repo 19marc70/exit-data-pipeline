@@ -28,7 +28,13 @@ EXCHANGES = [
 
 def create_exchange(name):
     exchange_class = getattr(ccxt, name)
-    return exchange_class({"enableRateLimit": True, "timeout": 30000})
+
+    return exchange_class(
+        {
+            "enableRateLimit": True,
+            "timeout": 30000,
+        }
+    )
 
 
 async def load_markets(exchange):
@@ -39,10 +45,16 @@ async def load_markets(exchange):
 
     markets = await exchange.load_markets()
     MARKET_CACHE[exchange_id] = markets
+
     return markets
 
 
-async def fetch_ohlcv_from_exchange(exchange_name, symbol_candidates, timeframe="1d", limit=120):
+async def fetch_ohlcv_from_exchange(
+    exchange_name,
+    symbol_candidates,
+    timeframe="1d",
+    limit=120,
+):
     exchange = create_exchange(exchange_name)
 
     try:
@@ -52,18 +64,36 @@ async def fetch_ohlcv_from_exchange(exchange_name, symbol_candidates, timeframe=
             if symbol not in markets:
                 continue
 
-            candles = await exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+            candles = await exchange.fetch_ohlcv(
+                symbol,
+                timeframe=timeframe,
+                limit=limit,
+            )
 
             if candles and len(candles) >= 40:
                 df = pd.DataFrame(
                     candles,
-                    columns=["timestamp", "open", "high", "low", "close", "volume"],
+                    columns=[
+                        "timestamp",
+                        "open",
+                        "high",
+                        "low",
+                        "close",
+                        "volume",
+                    ],
                 )
 
-                df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+                df["timestamp"] = pd.to_datetime(
+                    df["timestamp"],
+                    unit="ms",
+                    utc=True,
+                )
 
                 for col in ["open", "high", "low", "close", "volume"]:
-                    df[col] = pd.to_numeric(df[col], errors="coerce")
+                    df[col] = pd.to_numeric(
+                        df[col],
+                        errors="coerce",
+                    )
 
                 df = (
                     df.dropna()
@@ -106,21 +136,35 @@ async def get_exchange_ohlcv(symbol, limit=120):
             errors.append(f"{exchange_name}: {str(e)}")
             await asyncio.sleep(1)
 
-    raise Exception(f"No OHLCV source found for {symbol}. Errors: {errors}")
+    raise Exception(
+        f"No OHLCV source found for {symbol}. Errors: {errors}"
+    )
 
 
 def calculate_rsi(close, period=14):
-    close = pd.to_numeric(close, errors="coerce").dropna()
+    close = pd.to_numeric(
+        close,
+        errors="coerce",
+    ).dropna()
 
     if len(close) < period + 10:
         return None
 
     delta = close.diff()
+
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
 
-    avg_gain = gain.ewm(alpha=1 / period, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1 / period, adjust=False).mean()
+    avg_gain = gain.ewm(
+        alpha=1 / period,
+        adjust=False,
+    ).mean()
+
+    avg_loss = loss.ewm(
+        alpha=1 / period,
+        adjust=False,
+    ).mean()
+
     avg_loss = avg_loss.replace(0, math.nan)
 
     rs = avg_gain / avg_loss
@@ -142,9 +186,20 @@ def calculate_atr(df, period=14):
             "volatility": "⚪ insufficient_data",
         }
 
-    high = pd.to_numeric(df["high"], errors="coerce")
-    low = pd.to_numeric(df["low"], errors="coerce")
-    close = pd.to_numeric(df["close"], errors="coerce")
+    high = pd.to_numeric(
+        df["high"],
+        errors="coerce",
+    )
+
+    low = pd.to_numeric(
+        df["low"],
+        errors="coerce",
+    )
+
+    close = pd.to_numeric(
+        df["close"],
+        errors="coerce",
+    )
 
     prev_close = close.shift()
 
@@ -157,7 +212,11 @@ def calculate_atr(df, period=14):
         axis=1,
     ).max(axis=1)
 
-    atr = true_range.ewm(alpha=1 / period, adjust=False).mean().iloc[-1]
+    atr = true_range.ewm(
+        alpha=1 / period,
+        adjust=False,
+    ).mean().iloc[-1]
+
     price = close.iloc[-1]
 
     if pd.isna(atr) or pd.isna(price) or price <= 0:
@@ -189,7 +248,10 @@ async def build_coin_indicators(symbol):
     symbol = symbol.upper()
 
     try:
-        df, source, used_symbol = await get_exchange_ohlcv(symbol, limit=120)
+        df, source, used_symbol = await get_exchange_ohlcv(
+            symbol,
+            limit=120,
+        )
 
         rsi = calculate_rsi(df["close"])
         atr = calculate_atr(df)
@@ -203,7 +265,7 @@ async def build_coin_indicators(symbol):
             "atr_14d": atr["atr_14d"],
             "atr_pct_14d": atr["atr_pct_14d"],
             "volatility": atr["volatility"],
-            "indicator_method": "ccxt_exchange_ohlcv_rsi_atr_v4",
+            "indicator_method": "ccxt_exchange_ohlcv_rsi_atr_v5",
             "indicator_source": source,
             "indicator_symbol": used_symbol,
         }
@@ -238,60 +300,74 @@ async def build_coin_indicators(symbol):
 
 async def build_btc_pi_cycle():
     try:
-        df, source, used_symbol = await get_exchange_ohlcv("BTC", limit=400)
+        df, source, used_symbol = await get_exchange_ohlcv(
+            "BTC",
+            limit=500,
+        )
 
-        close = pd.to_numeric(df["close"], errors="coerce").dropna()
+        if df is None or len(df) < 350:
+            raise Exception(
+                f"BTC Pi Cycle needs 350 candles, got {0 if df is None else len(df)} from {source} {used_symbol}"
+            )
+
+        close = pd.to_numeric(
+            df["close"],
+            errors="coerce",
+        ).dropna()
 
         if len(close) < 350:
-            return {
-                "status": "unknown",
-                "cycle_state": "⚪ insufficient_history",
-                "ma_111": None,
-                "ma_350x2": None,
-                "distance_pct": None,
-                "top_risk": False,
-                "triggered": False,
-                "method": "real_pi_cycle_ccxt_111dma_350dma_x2",
-                "indicator_source": source,
-                "indicator_symbol": used_symbol,
-                "candles_used": len(close),
-            }
+            raise Exception(
+                f"BTC Pi Cycle needs 350 clean candles, got {len(close)} from {source} {used_symbol}"
+            )
 
-        ma_111 = close.rolling(window=111, min_periods=111).mean().iloc[-1]
-        ma_350x2 = close.rolling(window=350, min_periods=350).mean().iloc[-1] * 2
+        ma_111 = (
+            close
+            .rolling(
+                window=111,
+                min_periods=111,
+            )
+            .mean()
+            .iloc[-1]
+        )
+
+        ma_350x2 = (
+            close
+            .rolling(
+                window=350,
+                min_periods=350,
+            )
+            .mean()
+            .iloc[-1]
+        ) * 2
 
         if pd.isna(ma_111) or pd.isna(ma_350x2) or ma_111 <= 0:
-            return {
-                "status": "unknown",
-                "cycle_state": "⚪ unavailable",
-                "ma_111": None,
-                "ma_350x2": None,
-                "distance_pct": None,
-                "top_risk": False,
-                "triggered": False,
-                "method": "real_pi_cycle_ccxt_111dma_350dma_x2",
-                "indicator_source": source,
-                "indicator_symbol": used_symbol,
-                "candles_used": len(close),
-            }
+            raise Exception(
+                "Pi Cycle moving averages returned invalid values"
+            )
 
-        distance_pct = ((ma_350x2 - ma_111) / ma_111) * 100
+        distance_pct = (
+            (ma_350x2 - ma_111)
+            / ma_111
+        ) * 100
 
         if ma_111 >= ma_350x2:
             status = "top_risk"
             state = "🔴 TOP_RISK"
             top_risk = True
             triggered = True
+
         elif distance_pct <= 10:
             status = "late_cycle"
             state = "🟠 LATE_CYCLE"
             top_risk = False
             triggered = False
+
         elif distance_pct <= 25:
             status = "mid_cycle"
             state = "🟡 MID_CYCLE"
             top_risk = False
             triggered = False
+
         else:
             status = "early_mid_cycle"
             state = "🟢 EARLY_MID_CYCLE"
