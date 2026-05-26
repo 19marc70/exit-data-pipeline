@@ -12,8 +12,9 @@ CACHE = {
     "timestamp": 0
 }
 
-CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "900"))
+CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "3600"))
 COINGLASS_API_KEY = os.getenv("COINGLASS_API_KEY")
+
 
 COINS = {
     "XRP": "ripple",
@@ -22,12 +23,14 @@ COINS = {
     "CFG": "centrifuge"
 }
 
+
 DERIVATIVE_SYMBOLS = {
     "XRP": "XRPUSDT",
     "ONDO": "ONDOUSDT",
     "AERO": "AEROUSDT",
     "CFG": "CFGUSDT"
 }
+
 
 HYPERLIQUID_SYMBOLS = {
     "XRP": "XRP",
@@ -36,12 +39,14 @@ HYPERLIQUID_SYMBOLS = {
     "CFG": "CFG"
 }
 
+
 HOLDINGS = {
     "XRP": float(os.getenv("HOLDING_XRP", "11093.5")),
     "ONDO": float(os.getenv("HOLDING_ONDO", "22397.63463725")),
     "AERO": float(os.getenv("HOLDING_AERO", "10251.39604089")),
     "CFG": float(os.getenv("HOLDING_CFG", "10667.05368724")),
 }
+
 
 AVG_ENTRY = {
     "XRP": float(os.getenv("AVG_ENTRY_XRP", "0.9699")),
@@ -56,18 +61,28 @@ def now_iso():
 
 
 def cache_valid():
-    return CACHE["snapshot"] is not None and time.time() - CACHE["timestamp"] < CACHE_TTL_SECONDS
+    return (
+        CACHE["snapshot"] is not None
+        and time.time() - CACHE["timestamp"] < CACHE_TTL_SECONDS
+    )
 
 
 async def get_json(url, params=None, headers=None):
     try:
         async with httpx.AsyncClient(timeout=25) as client:
-            r = await client.get(url, params=params, headers=headers)
-            if r.status_code in [401, 403, 429]:
-                print(f"HTTP BLOCK/RATE {r.status_code}: {url}")
+            response = await client.get(
+                url,
+                params=params,
+                headers=headers
+            )
+
+            if response.status_code in [401, 403, 429]:
+                print(f"HTTP BLOCK/RATE {response.status_code}: {url}")
                 return None
-            r.raise_for_status()
-            return r.json()
+
+            response.raise_for_status()
+            return response.json()
+
     except Exception as e:
         print(f"HTTP ERROR: {url} -> {e}")
         return None
@@ -76,12 +91,19 @@ async def get_json(url, params=None, headers=None):
 async def post_json(url, payload=None, headers=None):
     try:
         async with httpx.AsyncClient(timeout=25) as client:
-            r = await client.post(url, json=payload, headers=headers)
-            if r.status_code in [401, 403, 429]:
-                print(f"HTTP POST BLOCK/RATE {r.status_code}: {url}")
+            response = await client.post(
+                url,
+                json=payload,
+                headers=headers
+            )
+
+            if response.status_code in [401, 403, 429]:
+                print(f"HTTP POST BLOCK/RATE {response.status_code}: {url}")
                 return None
-            r.raise_for_status()
-            return r.json()
+
+            response.raise_for_status()
+            return response.json()
+
     except Exception as e:
         print(f"HTTP POST ERROR: {url} -> {e}")
         return None
@@ -90,10 +112,13 @@ async def post_json(url, payload=None, headers=None):
 def classify_trend(change_24h):
     if change_24h is None:
         return "⚪ unknown"
+
     if change_24h >= 5:
         return "🟢 strengthening"
+
     if change_24h <= -5:
         return "🟠 weakening"
+
     return "🟡 sideways"
 
 
@@ -111,14 +136,25 @@ async def get_prices():
 
 
 async def get_btc_dominance():
-    data = await get_json("https://api.coingecko.com/api/v3/global")
+    data = await get_json(
+        "https://api.coingecko.com/api/v3/global"
+    )
+
     if not data:
         return None
-    return data.get("data", {}).get("market_cap_percentage", {}).get("btc")
+
+    return (
+        data
+        .get("data", {})
+        .get("market_cap_percentage", {})
+        .get("btc")
+    )
 
 
 async def get_fear_greed():
-    data = await get_json("https://api.alternative.me/fng/")
+    data = await get_json(
+        "https://api.alternative.me/fng/"
+    )
 
     if not data:
         return {
@@ -153,15 +189,18 @@ def extract_latest_numeric(raw):
             return None
 
     if isinstance(raw, list):
-        nums = []
+        values = []
+
         for item in raw:
-            val = extract_latest_numeric(item)
-            if val is not None:
-                nums.append(val)
-        return nums[-1] if nums else None
+            value = extract_latest_numeric(item)
+
+            if value is not None:
+                values.append(value)
+
+        return values[-1] if values else None
 
     if isinstance(raw, dict):
-        preferred = [
+        preferred_keys = [
             "value",
             "current",
             "score",
@@ -171,25 +210,30 @@ def extract_latest_numeric(raw):
             "last"
         ]
 
-        for key in preferred:
+        for key in preferred_keys:
             if raw.get(key) is not None:
-                val = extract_latest_numeric(raw.get(key))
-                if val is not None:
-                    return val
+                value = extract_latest_numeric(raw.get(key))
 
-        nums = []
-        for _, v in raw.items():
-            val = extract_latest_numeric(v)
-            if val is not None:
-                nums.append(val)
+                if value is not None:
+                    return value
 
-        return nums[-1] if nums else None
+        values = []
+
+        for value in raw.values():
+            parsed = extract_latest_numeric(value)
+
+            if parsed is not None:
+                values.append(parsed)
+
+        return values[-1] if values else None
 
     return None
 
 
 async def get_cbbi_bundle():
-    data = await get_json("https://colintalkscrypto.com/cbbi/data/latest.json")
+    data = await get_json(
+        "https://colintalkscrypto.com/cbbi/data/latest.json"
+    )
 
     if not data:
         return {
@@ -217,14 +261,18 @@ async def get_cbbi_bundle():
             "source_key": name
         }
 
-    confidence_value = extract_latest_numeric(data.get("Confidence")) if isinstance(data, dict) else None
+    confidence_value = (
+        extract_latest_numeric(data.get("Confidence"))
+        if isinstance(data, dict)
+        else None
+    )
 
-    if confidence_value is None:
+    if confidence_value is None and isinstance(data, dict):
         for key in ["CBBI", "cbbi", "value", "index"]:
-            if isinstance(data, dict):
-                confidence_value = extract_latest_numeric(data.get(key))
-                if confidence_value is not None:
-                    break
+            confidence_value = extract_latest_numeric(data.get(key))
+
+            if confidence_value is not None:
+                break
 
     if confidence_value is None:
         cbbi = {
@@ -235,6 +283,7 @@ async def get_cbbi_bundle():
             "source": "colintalkscrypto",
             "raw_keys": raw_keys
         }
+
     else:
         if confidence_value >= 85:
             state = "🔴 cycle_top_risk"
@@ -413,7 +462,7 @@ def build_cycle_score(pi_cycle, cbbi, macro_intelligence):
     elif pi_cycle.get("status") == "late_cycle":
         score -= 15
         reasons.append("pi_cycle_late_cycle")
-    elif pi_cycle.get("status") == "mid_late_cycle":
+    elif pi_cycle.get("status") in ["mid_cycle", "mid_late_cycle"]:
         score -= 5
         reasons.append("pi_cycle_mid_late")
 
@@ -479,6 +528,7 @@ async def get_coinglass_funding(symbol):
 
     try:
         rows = data.get("data")
+
         if isinstance(rows, dict):
             rows = rows.get("list", [])
 
@@ -495,6 +545,7 @@ async def get_coinglass_funding(symbol):
 
         if isinstance(last, list):
             value = float(last[-1])
+
         elif isinstance(last, dict):
             for key in ["close", "fundingRate", "funding_rate", "rate", "value"]:
                 if last.get(key) is not None:
@@ -548,6 +599,7 @@ async def get_coinglass_open_interest(symbol):
 
     try:
         rows = data.get("data")
+
         if isinstance(rows, dict):
             rows = rows.get("list", [])
 
@@ -613,14 +665,15 @@ async def get_hyperliquid_contexts():
 
     try:
         meta = data[0]
-        ctxs = data[1]
+        contexts = data[1]
         universe = meta.get("universe", [])
         result = {}
 
-        for i, asset in enumerate(universe):
+        for index, asset in enumerate(universe):
             name = asset.get("name")
+
             if name:
-                result[name.upper()] = ctxs[i] if i < len(ctxs) else {}
+                result[name.upper()] = contexts[index] if index < len(contexts) else {}
 
         return result
 
@@ -630,10 +683,10 @@ async def get_hyperliquid_contexts():
 
 
 def get_hyperliquid_derivatives(symbol, contexts):
-    hl = HYPERLIQUID_SYMBOLS.get(symbol)
-    ctx = contexts.get(hl.upper()) if hl else None
+    hyperliquid_symbol = HYPERLIQUID_SYMBOLS.get(symbol)
+    context = contexts.get(hyperliquid_symbol.upper()) if hyperliquid_symbol else None
 
-    if not ctx:
+    if not context:
         return {
             "funding": {
                 "available": False,
@@ -651,14 +704,18 @@ def get_hyperliquid_derivatives(symbol, contexts):
         }
 
     try:
-        funding = float(ctx.get("funding")) if ctx.get("funding") is not None else None
+        funding = float(context.get("funding")) if context.get("funding") is not None else None
     except Exception:
         funding = None
 
     try:
-        oi = float(ctx.get("openInterest")) if ctx.get("openInterest") is not None else None
+        open_interest = (
+            float(context.get("openInterest"))
+            if context.get("openInterest") is not None
+            else None
+        )
     except Exception:
-        oi = None
+        open_interest = None
 
     return {
         "funding": {
@@ -668,9 +725,9 @@ def get_hyperliquid_derivatives(symbol, contexts):
             "source": "hyperliquid"
         },
         "open_interest": {
-            "available": oi is not None,
-            "reason": "ok" if oi is not None else "oi_missing",
-            "value": oi,
+            "available": open_interest is not None,
+            "reason": "ok" if open_interest is not None else "oi_missing",
+            "value": open_interest,
             "change_24h_pct": None,
             "source": "hyperliquid"
         },
@@ -716,6 +773,7 @@ def classify_derivatives(funding, open_interest):
 
     elif oi_available:
         reasons.append("oi_available_no_24h_change")
+
     else:
         reasons.append("oi_missing")
 
@@ -728,6 +786,7 @@ def classify_derivatives(funding, open_interest):
 async def build_derivatives(symbol, hyperliquid_contexts):
     funding = await get_coinglass_funding(DERIVATIVE_SYMBOLS.get(symbol))
     open_interest = await get_coinglass_open_interest(DERIVATIVE_SYMBOLS.get(symbol))
+
     source_priority = "coinglass"
 
     if not funding.get("available") or not open_interest.get("available"):
@@ -755,19 +814,20 @@ async def build_exit_snapshot():
         cached["cache_mode"] = "fresh_cache"
         return cached
 
-prices, btc_dominance, fear_greed, cbbi_bundle, pi_cycle, hyperliquid_contexts = await asyncio.gather(
-    get_prices(),
-    get_btc_dominance(),
-    get_fear_greed(),
-    get_cbbi_bundle(),
-    build_btc_pi_cycle(),
-    get_hyperliquid_contexts(),
-)
+    prices, btc_dominance, fear_greed, cbbi_bundle, pi_cycle, hyperliquid_contexts = await asyncio.gather(
+        get_prices(),
+        get_btc_dominance(),
+        get_fear_greed(),
+        get_cbbi_bundle(),
+        build_btc_pi_cycle(),
+        get_hyperliquid_contexts(),
+    )
 
     cbbi = cbbi_bundle.get("cbbi", {})
     macro_components = cbbi_bundle.get("macro_components", {})
 
     macro_intelligence = build_macro_intelligence(macro_components)
+
     cycle_intelligence = build_cycle_score(
         pi_cycle,
         cbbi,
@@ -806,7 +866,11 @@ prices, btc_dominance, fear_greed, cbbi_bundle, pi_cycle, hyperliquid_contexts =
     coin_indicators = {}
     missing_data = []
 
-    for symbol, indicator_result, derivative_result in zip(symbols, indicator_results, derivative_results):
+    for symbol, indicator_result, derivative_result in zip(
+        symbols,
+        indicator_results,
+        derivative_results
+    ):
         coin_id = COINS[symbol]
         base = prices.get(coin_id, {}) or {}
 
@@ -832,9 +896,20 @@ prices, btc_dominance, fear_greed, cbbi_bundle, pi_cycle, hyperliquid_contexts =
             missing_data.append(f"{symbol}_derivatives_error")
             derivatives = {
                 "source_priority": "unavailable",
-                "funding": {"available": False, "reason": "error", "value": None},
-                "open_interest": {"available": False, "reason": "error", "value": None},
-                "state": {"leverage_risk": "⚪ unknown", "reasons": ["derivatives_error"]},
+                "funding": {
+                    "available": False,
+                    "reason": "error",
+                    "value": None
+                },
+                "open_interest": {
+                    "available": False,
+                    "reason": "error",
+                    "value": None
+                },
+                "state": {
+                    "leverage_risk": "⚪ unknown",
+                    "reasons": ["derivatives_error"]
+                },
             }
         else:
             derivatives = derivative_result
@@ -849,7 +924,7 @@ prices, btc_dominance, fear_greed, cbbi_bundle, pi_cycle, hyperliquid_contexts =
             "atr_pct_14d": indicator.get("atr_pct_14d"),
             "volatility": indicator.get("volatility"),
             "trend": trend,
-            "indicator_method": indicator.get("indicator_method", "daily_ohlc_rsi_atr"),
+            "indicator_method": indicator.get("indicator_method", "unknown"),
             "timeframe": indicator.get("timeframe", "1d"),
             "candles_used": indicator.get("candles_used"),
             "liquidity": "🟢 strong" if base.get("usd_24h_vol", 0) >= 5_000_000 else "🔴 severe",
@@ -859,15 +934,20 @@ prices, btc_dominance, fear_greed, cbbi_bundle, pi_cycle, hyperliquid_contexts =
         coins[symbol] = coin
         coin_indicators[symbol] = coin
 
-    altseason_index = round(max(0, 100 - btc_dominance), 2) if btc_dominance is not None else None
+    altseason_index = (
+        round(max(0, 100 - btc_dominance), 2)
+        if btc_dominance is not None
+        else None
+    )
+
     stablecoin_regime = "🟡 neutral"
 
     if fear_greed.get("value") is not None:
-        fg = fear_greed["value"]
+        value = fear_greed["value"]
 
-        if fg <= 25:
+        if value <= 25:
             stablecoin_regime = "🟢 defensive_rotation"
-        elif fg >= 75:
+        elif value >= 75:
             stablecoin_regime = "🔴 euphoric_risk"
 
     if not cbbi.get("available"):
