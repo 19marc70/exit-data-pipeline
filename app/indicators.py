@@ -1,101 +1,124 @@
 import math
 import asyncio
-import httpx
 import pandas as pd
-from functools import lru_cache
+import ccxt.async_support as ccxt
 
 
-COINGECKO_IDS = {
-    "BTC": "bitcoin",
-    "XRP": "ripple",
-    "ONDO": "ondo-finance",
-    "AERO": "aerodrome-finance",
-    "CFG": "centrifuge",
+LAST_GOOD_INDICATORS = {}
+MARKET_CACHE = {}
+
+SYMBOL_CANDIDATES = {
+    "BTC": ["BTC/USDT", "BTC/USD"],
+    "XRP": ["XRP/USDT", "XRP/USD"],
+    "ONDO": ["ONDO/USDT", "ONDO/USD"],
+    "AERO": ["AERO/USDT", "AERO/USD"],
+    "CFG": ["CFG/USDT", "CFG/USD"],
 }
 
+EXCHANGES = [
+    "binance",
+    "bybit",
+    "okx",
+    "kucoin",
+    "gateio",
+    "bitget",
+    "coinbase",
+]
 
-@lru_cache(maxsize=20)
-def get_coin_id(symbol):
+
+def create_exchange(name):
+    exchange_class = getattr(ccxt, name)
+
+    return exchange_class({
+        "enableRateLimit": True,
+        "timeout": 30000,
+    })
+
+
+async def load_markets(exchange):
+    exchange_id = exchange.id
+
+    if exchange_id in MARKET_CACHE:
+        return MARKET_CACHE[exchange_id]
+
+    markets = await exchange.load_markets()
+    MARKET_CACHE[exchange_id] = markets
+
+    return markets
+
+
+async def fetch_ohlcv_from_exchange(exchange_name, symbol_candidates, timeframe="1d", limit=120):
+    exchange = create_exchange(exchange_name)
+
+    try:
+        markets = await load_markets(exchange)
+
+        for symbol in symbol_candidates:
+            if symbol not in markets:
+                continue
+
+            candles = await exchange.fetch_ohlcv(
+                symbol,
+                timeframe=timeframe,
+                limit=limit,
+            )
+
+            if candles and len(candles) >= 40:
+                df = pd.DataFrame(
+                    candles,
+                    columns=["timestamp", "open", "high", "low", "close", "volume"],
+                )
+
+                df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+
+                for col in ["open", "high", "low", "close", "volume"]:
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
+
+                df = (
+                    df.dropna()
+                    .sort_values("timestamp")
+                    .drop_duplicates("timestamp")
+                    .reset_index(drop=True)
+                )
+
+                if len(df) >= 40:
+                    return df, exchange_name, symbol
+
+        return None, exchange_name, None
+
+    finally:
+        await exchange.close()
+
+
+async def get_exchange_ohlcv(symbol, limit=120):
     symbol = symbol.upper()
+    candidates = SYMBOL_CANDIDATES.get(symbol)
 
-    if symbol not in COINGECKO_IDS:
+    if not candidates:
         raise ValueError(f"Unknown symbol: {symbol}")
 
-    return COINGECKO_IDS[symbol]
+    errors = []
 
+    for exchange_name in EXCHANGES:
+        try:
+            df, source, used_symbol = await fetch_ohlcv_from_exchange(
+                exchange_name,
+                candidates,
+                timeframe="1d",
+                limit=limit,
+            )
 
-async def fetch_market_chart(symbol, days=90):
-    coin_id = get_coin_id(symbol)
+            if df is not None:
+                return df, source, used_symbol
 
-    url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
+        except Exception as e:
+            errors.append(f"{exchange_name}: {str(e)}")
+            await asyncio.sleep(1)
 
-    params = {
-        "vs_currency": "usd",
-        "days": str(days),
-        "interval": "daily",
-    }
-
-    async with httpx.AsyncClient(timeout=30) as client:
-        for attempt in range(3):
-            try:
-                response = await client.get(url, params=params)
-
-                if response.status_code == 429:
-                    print(f"RATE LIMIT {symbol}")
-                    await asyncio.sleep(10 * (attempt + 1))
-                    continue
-
-                response.raise_for_status()
-
-                data = response.json()
-                prices = data.get("prices", [])
-
-                if len(prices) < 30:
-                    raise Exception(f"Not enough prices for {symbol}: {len(prices)}")
-
-                return data
-
-            except Exception as e:
-                print(f"FETCH ERROR {symbol}: {str(e)}")
-
-                if attempt < 2:
-                    await asyncio.sleep(5 * (attempt + 1))
-                else:
-                    raise e
-
-
-async def get_daily_ohlc(symbol, days=90):
-    data = await fetch_market_chart(symbol, days)
-    prices = data.get("prices", [])
-
-    df = pd.DataFrame(prices, columns=["timestamp", "close"])
-
-    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
-    df["close"] = pd.to_numeric(df["close"], errors="coerce")
-
-    df = (
-        df.dropna()
-        .sort_values("timestamp")
-        .drop_duplicates("timestamp")
-        .reset_index(drop=True)
-    )
-
-    if len(df) < 30:
-        raise Exception(f"Not enough clean candles for {symbol}: {len(df)}")
-
-    df["open"] = df["close"].shift(1)
-    df["open"] = df["open"].fillna(df["close"])
-
-    df["high"] = df[["open", "close"]].max(axis=1)
-    df["low"] = df[["open", "close"]].min(axis=1)
-
-    return df
+    raise Exception(f"No OHLCV source found for {symbol}. Errors: {errors}")
 
 
 def calculate_rsi(close, period=14):
-    if close is None or len(close) < period + 10:
-        return None
-
     close = pd.to_numeric(close, errors="coerce").dropna()
 
     if len(close) < period + 10:
@@ -145,9 +168,7 @@ def calculate_atr(df, period=14):
         axis=1,
     ).max(axis=1)
 
-    atr_series = tr.ewm(alpha=1 / period, adjust=False).mean()
-
-    atr = atr_series.iloc[-1]
+    atr = tr.ewm(alpha=1 / period, adjust=False).mean().iloc[-1]
     price = close.iloc[-1]
 
     if pd.isna(atr) or pd.isna(price) or price <= 0:
@@ -179,12 +200,12 @@ async def build_coin_indicators(symbol):
     symbol = symbol.upper()
 
     try:
-        df = await get_daily_ohlc(symbol, 90)
+        df, source, used_symbol = await get_exchange_ohlcv(symbol, limit=120)
 
         rsi = calculate_rsi(df["close"])
         atr = calculate_atr(df)
 
-        return {
+        result = {
             "symbol": symbol,
             "timeframe": "1d",
             "candles_used": len(df),
@@ -193,11 +214,24 @@ async def build_coin_indicators(symbol):
             "atr_14d": atr["atr_14d"],
             "atr_pct_14d": atr["atr_pct_14d"],
             "volatility": atr["volatility"],
-            "indicator_method": "coingecko_market_chart_retry_v5",
+            "indicator_method": "ccxt_exchange_ohlcv_rsi_atr_v1",
+            "indicator_source": source,
+            "indicator_symbol": used_symbol,
         }
+
+        if rsi is not None and atr["atr_14d"] is not None:
+            LAST_GOOD_INDICATORS[symbol] = result
+
+        return result
 
     except Exception as e:
         print(f"INDICATOR ERROR {symbol}: {str(e)}")
+
+        if symbol in LAST_GOOD_INDICATORS:
+            cached = dict(LAST_GOOD_INDICATORS[symbol])
+            cached["indicator_method"] = "last_good_cached_indicator"
+            cached["indicator_warning"] = str(e)
+            return cached
 
         return {
             "symbol": symbol,
@@ -215,7 +249,7 @@ async def build_coin_indicators(symbol):
 
 async def build_btc_pi_cycle():
     try:
-        df = await get_daily_ohlc("BTC", 365)
+        df, source, used_symbol = await get_exchange_ohlcv("BTC", limit=400)
 
         if df is None or len(df) < 350:
             return {
@@ -278,6 +312,8 @@ async def build_btc_pi_cycle():
             "top_risk": top_risk,
             "triggered": triggered,
             "method": "pi_cycle_111dma_vs_350dma_x2",
+            "indicator_source": source,
+            "indicator_symbol": used_symbol,
         }
 
     except Exception as e:
