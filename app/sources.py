@@ -755,7 +755,7 @@ async def build_exit_snapshot():
         cached["cache_mode"] = "fresh_cache"
         return cached
 
-    prices, btc_dominance, fear_greed, cbbi_bundle, pi_cycle, hyperliquid_contexts = await asyncio.gather(
+    prices, btc_dominance, fear_greed, cbbi_bundle, hyperliquid_contexts = await asyncio.gather(
         get_prices(),
         get_btc_dominance(),
         get_fear_greed(),
