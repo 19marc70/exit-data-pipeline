@@ -764,11 +764,15 @@ prices, btc_dominance, fear_greed, cbbi_bundle, pi_cycle, hyperliquid_contexts =
     get_hyperliquid_contexts(),
 )
 
-cbbi = cbbi_bundle.get("cbbi", {})
-macro_components = cbbi_bundle.get("macro_components", {})
+    cbbi = cbbi_bundle.get("cbbi", {})
+    macro_components = cbbi_bundle.get("macro_components", {})
 
-macro_intelligence = build_macro_intelligence(macro_components)
-cycle_intelligence = build_cycle_score(pi_cycle, cbbi, macro_intelligence)
+    macro_intelligence = build_macro_intelligence(macro_components)
+    cycle_intelligence = build_cycle_score(
+        pi_cycle,
+        cbbi,
+        macro_intelligence
+    )
 
     if not prices:
         fallback = CACHE["snapshot"] or {
