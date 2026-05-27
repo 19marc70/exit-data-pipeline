@@ -1,4 +1,4 @@
-ENGINE_VERSION = "v10.1-macro-capped-coin-scoring"
+ENGINE_VERSION = "v10.1-macro-capped-coin-scoring-data-quality"
 
 PORTFOLIO = {
     "XRP": {"qty": 11093.5, "sellable": 0.0, "moonbag": 11093.5, "avg_entry": 0.9699},
@@ -95,7 +95,11 @@ def interpret_score(category, value):
         if low <= value < high:
             return {"label": label, "meaning": label, "details": details}
 
-    return {"label": "⚪ unknown", "meaning": "buiten bereik", "details": ["⚪ waarde buiten interpretatiebereik"]}
+    return {
+        "label": "⚪ unknown",
+        "meaning": "buiten bereik",
+        "details": ["⚪ waarde buiten interpretatiebereik"],
+    }
 
 
 def interpret_state(category, value):
@@ -401,6 +405,68 @@ def apply_macro_regime_cap(score, snapshot):
     return score
 
 
+def build_data_quality(snapshot):
+    missing = list(snapshot.get("missing_data", []))
+    coins = snapshot.get("coins", {})
+    btc = snapshot.get("btc", {})
+
+    warnings = []
+
+    for symbol, coin in coins.items():
+        if coin.get("rsi_14d") is None:
+            warnings.append(f"{symbol}_rsi_missing")
+
+        if coin.get("atr_14d") is None:
+            warnings.append(f"{symbol}_atr_missing")
+
+        if coin.get("current_price") is None and coin.get("usd") is None:
+            warnings.append(f"{symbol}_price_missing")
+
+        derivatives = coin.get("derivatives", {}) or {}
+        der_state = derivatives.get("state", {}) or {}
+
+        if der_state.get("leverage_risk") in [None, "⚪ unknown"]:
+            warnings.append(f"{symbol}_derivatives_unknown")
+
+    if not btc.get("cbbi", {}).get("available"):
+        warnings.append("cbbi_missing")
+
+    if btc.get("fear_greed", {}).get("value") is None:
+        warnings.append("fear_greed_missing")
+
+    if btc.get("dominance") is None:
+        warnings.append("btc_dominance_missing")
+
+    pi_cycle = btc.get("pi_cycle", {})
+
+    if not pi_cycle or pi_cycle.get("cycle_state") in [None, "⚪ unavailable"]:
+        warnings.append("pi_cycle_missing_or_unavailable")
+
+    all_warnings = missing + warnings
+
+    unique_warnings = []
+    for warning in all_warnings:
+        if warning not in unique_warnings:
+            unique_warnings.append(warning)
+
+    if not unique_warnings:
+        status = "✅ COMPLETE"
+        label = "Alle belangrijke data beschikbaar"
+    elif len(unique_warnings) <= 3:
+        status = "⚠️ PARTIAL"
+        label = "Enkele databronnen ontbreken"
+    else:
+        status = "❌ DEGRADED"
+        label = "Meerdere belangrijke databronnen ontbreken"
+
+    return {
+        "status": status,
+        "label": label,
+        "warnings": unique_warnings,
+        "warning_count": len(unique_warnings),
+    }
+
+
 def build_portfolio_intelligence(snapshot):
     coins = snapshot.get("coins", {})
     positions = {}
@@ -480,6 +546,7 @@ def build_portfolio_intelligence(snapshot):
             drawdown_score += 5
 
     portfolio_risk_score = concentration_score + drawdown_score
+
     portfolio_state = (
         "HIGH_RISK" if portfolio_risk_score >= 30
         else "MEDIUM_RISK" if portfolio_risk_score >= 15
@@ -661,8 +728,13 @@ def build_allocation_plan(global_action, exit_zone_score, portfolio_intelligence
         "status": status,
         "rule": "only_from_confirmed_sell_signals",
         "portfolio_concentration_note": concentration_note,
-        "xrp_allocation": {"action": "HOLD_10_YEAR_CORE", "sell_allowed": False},
-        "ondo_allocation": {"action": "MAINTAIN_CORE_RAW_POSITION"},
+        "xrp_allocation": {
+            "action": "HOLD_10_YEAR_CORE",
+            "sell_allowed": False,
+        },
+        "ondo_allocation": {
+            "action": "MAINTAIN_CORE_RAW_POSITION",
+        },
         "dca_out_ladder": [
             {"zone": "LIGHT_TRIM_ALLOWED", "sell_pct": 10},
             {"zone": "PARTIAL_EXIT_ALLOWED", "sell_pct": 25},
@@ -716,7 +788,10 @@ def build_score_interpretation(engine):
         "cycle_state": interpret_state("cycle_state", cycle.get("cycle_state")),
         "macro_score": interpret_score("macro", macro.get("macro_score")),
         "fear_greed": interpret_score("fear", fear.get("value")),
-        "portfolio_risk": interpret_score("portfolio_risk", portfolio_risk.get("portfolio_risk_score")),
+        "portfolio_risk": interpret_score(
+            "portfolio_risk",
+            portfolio_risk.get("portfolio_risk_score"),
+        ),
         "legend": {
             "exit_zone_score": [
                 {"range": "<20", "meaning": "🟢 Accumulatiezone / geen agressieve verkoop"},
@@ -754,6 +829,7 @@ def build_exit_engine(snapshot):
     coins = snapshot.get("coins", {})
     missing = list(snapshot.get("missing_data", []))
 
+    data_quality = build_data_quality(snapshot)
     portfolio_intelligence = build_portfolio_intelligence(snapshot)
     macro_cycle_score, macro_cycle_reasons = score_cycle_and_macro(snapshot)
 
@@ -911,13 +987,19 @@ def build_exit_engine(snapshot):
         signal["execution_type"] = adaptive["execution_style"]
         signal["adaptive_execution"] = adaptive
 
-    allocation_plan = build_allocation_plan(global_action, exit_zone_score, portfolio_intelligence)
+    allocation_plan = build_allocation_plan(
+        global_action,
+        exit_zone_score,
+        portfolio_intelligence,
+    )
+
     reentry_engine = build_reentry_engine(snapshot, global_action)
     btc = snapshot.get("btc", {})
 
     engine = {
         "engine_version": ENGINE_VERSION,
         "engine_status": "active",
+        "data_quality": data_quality,
         "global_action": global_action,
         "exit_zone_score": exit_zone_score,
         "score_components": {
@@ -946,6 +1028,7 @@ def build_exit_engine(snapshot):
             "portfolio_aware_sizing": True,
             "score_intelligence_enabled": True,
             "macro_regime_cap_enabled": True,
+            "data_quality_monitoring_enabled": True,
             "no_trade_if_expected_slippage_above_5pct": True,
         },
         "allocation_plan": allocation_plan,
